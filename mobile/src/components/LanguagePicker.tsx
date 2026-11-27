@@ -8,9 +8,11 @@ type Props = {
   selected: string;
   onSelect: (lang: Language) => void;
   onClose: () => void;
+  /** Rotate 180° so the person sitting opposite can read it (face-to-face mode). */
+  flipped?: boolean;
 };
 
-export function LanguagePicker({ visible, selected, onSelect, onClose }: Props) {
+export function LanguagePicker({ visible, selected, onSelect, onClose, flipped }: Props) {
   const [query, setQuery] = useState("");
   const items = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -24,7 +26,7 @@ export function LanguagePicker({ visible, selected, onSelect, onClose }: Props) 
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} presentationStyle="pageSheet">
-      <View style={styles.container}>
+      <View style={[styles.container, flipped && { transform: [{ rotate: "180deg" }] }]}>
         <View style={styles.header}>
           <Text style={styles.title}>Choose language · {LANGUAGES.length}</Text>
           <Pressable onPress={onClose} hitSlop={12}>

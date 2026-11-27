@@ -17,6 +17,7 @@ import { requestRecordingPermissionsAsync, setAudioModeAsync } from "expo-audio"
 import { LANGUAGES, byCode, type Language } from "./src/languages";
 import { LanguagePicker } from "./src/components/LanguagePicker";
 import { MicButton } from "./src/components/MicButton";
+import { FaceToFace } from "./src/components/FaceToFace";
 import { speechTranslate, textTranslate } from "./src/api";
 import { enqueueSpeech, hasDeviceVoice, onSpeakingChange, speak, stopSpeaking } from "./src/speech";
 import { loadHistory, loadSettings, saveHistory, saveSettings, type Entry, type Settings } from "./src/storage";
@@ -175,6 +176,7 @@ function Translator() {
         at: Date.now(),
       });
       setLiveTranslations([]);
+      setBusySide(null); // the entry is on screen; don't keep the spinner during playback
       if (settings!.autoSpeak && !spokenLive) await speak(r.translation, target, r.audioBase64);
     } catch (e) {
       Alert.alert("Translation failed", e instanceof Error ? e.message : String(e));
@@ -218,6 +220,42 @@ function Translator() {
       { text: "Clear", style: "destructive", onPress: () => (setHistory([]), saveHistory([])) },
     ]);
 
+  const languagePicker = (
+    <LanguagePicker
+      visible={picker !== null}
+      selected={picker === "A" ? langA.code : langB.code}
+      onClose={() => setPicker(null)}
+      onSelect={(l) => updateSettings(picker === "A" ? { langA: l.code } : { langB: l.code })}
+      flipped={settings.faceToFace && picker === "B"}
+    />
+  );
+
+  if (settings.faceToFace) {
+    return (
+      <SafeAreaView style={styles.root}>
+        <StatusBar style="light" hidden />
+        <FaceToFace
+          langA={langA}
+          langB={langB}
+          history={history}
+          liveText={live.liveText}
+          liveTranslations={liveTranslations}
+          connected={live.connected}
+          recordingSide={recordingSide}
+          busySide={busySide}
+          onMic={onMic}
+          onPickLanguage={setPicker}
+          onReplay={(e) => {
+            const t = byCode(e.targetCode);
+            if (t) speak(e.translation, t).catch(() => {});
+          }}
+          onExit={() => updateSettings({ faceToFace: false })}
+        />
+        {languagePicker}
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar style="light" />
@@ -234,6 +272,10 @@ function Translator() {
           </Pressable>
           <LangButton lang={langB} color={colors.accentB} onPress={() => setPicker("B")} />
         </View>
+
+        <Pressable onPress={() => updateSettings({ faceToFace: true })} style={styles.f2fBtn}>
+          <Text style={styles.f2fText}>👥  Face-to-face mode</Text>
+        </Pressable>
 
         <View style={styles.toggles}>
           <Toggle label="Auto-detect spoken language" value={autoDetect} onChange={setAutoDetect} />
@@ -318,12 +360,7 @@ function Translator() {
         </View>
       </KeyboardAvoidingView>
 
-      <LanguagePicker
-        visible={picker !== null}
-        selected={picker === "A" ? langA.code : langB.code}
-        onClose={() => setPicker(null)}
-        onSelect={(l) => updateSettings(picker === "A" ? { langA: l.code } : { langB: l.code })}
-      />
+      {languagePicker}
     </SafeAreaView>
   );
 }
@@ -416,6 +453,8 @@ const styles = StyleSheet.create({
   langSub: { color: colors.muted, fontSize: 12, marginTop: 2 },
   swap: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.cardAlt, alignItems: "center", justifyContent: "center" },
   swapText: { color: colors.text, fontSize: 22 },
+  f2fBtn: { marginHorizontal: 12, marginBottom: 8, paddingVertical: 10, borderRadius: 12, backgroundColor: colors.cardAlt, alignItems: "center" },
+  f2fText: { color: colors.text, fontSize: 15, fontWeight: "600" },
   toggles: { paddingHorizontal: 16, gap: 4 },
   toggle: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   toggleLabel: { color: colors.muted, fontSize: 14 },

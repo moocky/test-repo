@@ -17,6 +17,8 @@ export type Settings = {
   autoSpeak: boolean;
   /** Speak each translated sentence as soon as it is ready, while the speaker is still talking. */
   liveSpeak: boolean;
+  /** Split-screen mode: phone between two people, top half rotated toward the other person. */
+  faceToFace: boolean;
 };
 
 const HISTORY = "history.v1";
@@ -32,7 +34,7 @@ async function load<T>(key: string, fallback: T): Promise<T> {
 }
 
 export const loadSettings = () =>
-  load<Settings>(SETTINGS, { langA: "he-IL", langB: "en-US", autoSpeak: true, liveSpeak: false });
+  load<Settings>(SETTINGS, { langA: "he-IL", langB: "en-US", autoSpeak: true, liveSpeak: false, faceToFace: false });
 export const saveSettings = (s: Settings) => AsyncStorage.setItem(SETTINGS, JSON.stringify(s));
 
 export async function loadHistory(): Promise<Entry[]> {
