@@ -91,6 +91,12 @@ function Translator() {
   // so the mic is muted while the app speaks. With headphones there is no echo → keep it open.
   const headphones = useHeadphones();
   const onHeadphones = headphones.detectable ? headphones.connected : !!settings?.manualHeadphones;
+  /**
+   * Live speaking in effect right now: the user's own choice, or automatically while headphones
+   * are connected. Derived, not saved, so unplugging returns to the user's setting.
+   */
+  const liveSpeakAuto = !!settings?.autoSpeak && !settings.liveSpeak && settings.liveSpeakWithHeadphones && onHeadphones;
+  const liveSpeakActive = !!settings?.autoSpeak && (settings.liveSpeak || liveSpeakAuto);
   const onHeadphonesRef = useRef(onHeadphones);
   onHeadphonesRef.current = onHeadphones;
   const speakingNow = useRef(false);
@@ -177,7 +183,7 @@ function Translator() {
     speakChain.current = Promise.resolve();
     setLiveTranslations([]);
     const auto = isAuto(side);
-    turn.current = { side, source: auto ? null : source, target, speakLive: settings!.autoSpeak && settings!.liveSpeak };
+    turn.current = { side, source: auto ? null : source, target, speakLive: liveSpeakActive };
     try {
       // Auto mode: no language hint, so speech-to-text identifies the language itself.
       await live.start(auto ? null : source.stt);
@@ -394,6 +400,13 @@ function Translator() {
               onChange={(v) => updateSettings({ liveSpeak: v })}
             />
           )}
+          {settings.autoSpeak && !settings.liveSpeak && (
+            <Toggle
+              label="…automatically with headphones 🎧"
+              value={settings.liveSpeakWithHeadphones}
+              onChange={(v) => updateSettings({ liveSpeakWithHeadphones: v })}
+            />
+          )}
           {!headphones.detectable && (
             <Toggle
               label="I'm wearing headphones"
@@ -404,7 +417,8 @@ function Translator() {
           <HeadphoneStatus
             on={onHeadphones}
             name={headphones.route?.headphones ? headphones.route.name : null}
-            liveSpeak={settings.autoSpeak && settings.liveSpeak}
+            liveSpeak={liveSpeakActive}
+            auto={liveSpeakAuto}
             onEnableLiveSpeak={() => updateSettings({ autoSpeak: true, liveSpeak: true })}
           />
         </View>
@@ -486,8 +500,15 @@ function Translator() {
   );
 }
 
-function HeadphoneStatus(props: { on: boolean; name: string | null; liveSpeak: boolean; onEnableLiveSpeak: () => void }) {
-  const { on, name, liveSpeak, onEnableLiveSpeak } = props;
+function HeadphoneStatus(props: {
+  on: boolean;
+  name: string | null;
+  liveSpeak: boolean;
+  /** Live speaking is on only because headphones are connected. */
+  auto: boolean;
+  onEnableLiveSpeak: () => void;
+}) {
+  const { on, name, liveSpeak, auto, onEnableLiveSpeak } = props;
   if (!on) {
     return liveSpeak ? (
       <Text style={styles.hpHint}>🔈 Loudspeaker: the mic pauses while a translation is spoken (prevents echo).</Text>
@@ -497,7 +518,7 @@ function HeadphoneStatus(props: { on: boolean; name: string | null; liveSpeak: b
     <View style={styles.hpRow}>
       <Text style={styles.hpText} numberOfLines={2}>
         🎧 {name || "Headphones"}
-        {liveSpeak ? " · mic stays on while translations play" : ""}
+        {liveSpeak ? (auto ? " · speaking live (auto)" : " · mic stays on while translations play") : ""}
       </Text>
       {!liveSpeak && (
         <Pressable onPress={onEnableLiveSpeak} hitSlop={8}>
