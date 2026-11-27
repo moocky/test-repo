@@ -11,6 +11,8 @@ android {
   defaultConfig {
     versionCode 1
     versionName "1.0.0"
+    // Applied to the app's R8 run whenever this module is linked (see the file for why).
+    consumerProguardFiles "proguard-rules.pro"
   }
 }
 
