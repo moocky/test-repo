@@ -35,7 +35,7 @@ import { loadHistory, loadSettings, saveHistory, saveSettings, type Entry, type 
 import { colors } from "./src/theme";
 import { useLiveTranscription, type Segment } from "./src/useLiveTranscription";
 import { useHeadphones } from "./src/useHeadphones";
-import { deviceRecognitionAvailable, useDeviceRecognition } from "./src/useDeviceRecognition";
+import { OfflineSpeechError, deviceRecognitionAvailable, useDeviceRecognition } from "./src/useDeviceRecognition";
 
 type Side = "A" | "B";
 type SegTranslation = { translation: string; detectedLanguage: string | null; detectedLanguageCode: string | null };
@@ -238,14 +238,18 @@ function Translator() {
     turnEngine.current = engine;
     try {
       if (engine === "device") {
-        await deviceLive.start(source.code, { echoCancellation: !onHeadphones });
+        await deviceLive.start(source.code, {
+          echoCancellation: !onHeadphones,
+          offlineOnly: settings!.offlineSpeechOnly,
+          languageName: source.name,
+        });
       } else {
         // Auto mode: no language hint, so speech-to-text identifies the language itself.
         await cloudLive.start(auto ? null : source.stt);
       }
     } catch (e) {
       (engine === "device" ? deviceLive : cloudLive).cancel();
-      Alert.alert("Microphone error", e instanceof Error ? e.message : String(e));
+      Alert.alert(e instanceof OfflineSpeechError ? "Offline speech" : "Microphone error", e instanceof Error ? e.message : String(e));
       return;
     }
     startedAt.current = Date.now();
@@ -458,6 +462,13 @@ function Translator() {
         />
 
         <View style={styles.toggles}>
+          {engine === "device" && (
+            <Toggle
+              label="Offline speech only (audio never leaves the phone)"
+              value={settings.offlineSpeechOnly}
+              onChange={(v) => updateSettings({ offlineSpeechOnly: v })}
+            />
+          )}
           <Toggle label="Speak translation" value={settings.autoSpeak} onChange={(v) => updateSettings({ autoSpeak: v })} />
           {settings.autoSpeak && (
             <Toggle

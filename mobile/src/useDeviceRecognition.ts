@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Platform } from "react-native";
 import type { LiveResult, Segment } from "./useLiveTranscription";
 
 /**
@@ -17,6 +18,41 @@ try {
   sr = null;
 }
 export const deviceRecognitionAvailable = sr !== null;
+
+export class OfflineSpeechError extends Error {}
+
+const sameLanguage = (a: string, b: string) =>
+  a.toLowerCase().replace("_", "-") === b.toLowerCase() ||
+  a.toLowerCase().split(/[-_]/)[0] === b.toLowerCase().split("-")[0];
+
+/**
+ * Make sure speech for `locale` can be recognised without sending audio anywhere.
+ * On Android the offline model may need downloading first: trigger it and ask the user to retry.
+ */
+async function ensureOfflineSpeech(locale: string, languageName: string) {
+  const m = sr!.ExpoSpeechRecognitionModule;
+  if (!m.supportsOnDeviceRecognition()) {
+    throw new OfflineSpeechError(
+      "This phone can't recognise speech offline (needs Android 13+ or a recent iPhone). " +
+        "Turn off \"Offline speech only\" to allow the phone's online recogniser.",
+    );
+  }
+  if (Platform.OS !== "android") return; // iOS reports per-request; nothing to pre-download
+  let installed: string[] = [];
+  try {
+    installed = (await m.getSupportedLocales({ androidRecognitionServicePackage: "com.google.android.as" })).installedLocales;
+  } catch {
+    return; // can't tell – let the recogniser try
+  }
+  if (installed.length === 0 || installed.some((l) => sameLanguage(l, locale))) return;
+  const r = await m.androidTriggerOfflineModelDownload({ locale }).catch(() => null);
+  throw new OfflineSpeechError(
+    r?.status === "download_success"
+      ? `Offline ${languageName} speech is ready – tap the mic again.`
+      : `Downloading offline ${languageName} speech recognition. Try again when it finishes ` +
+        "(Settings → System → Languages → On-device speech recognition).",
+  );
+}
 
 // Latin/Arabic/Indic sentence ends need a following space (so "3.50" isn't split);
 // CJK full-width punctuation ends a sentence by itself.
@@ -112,7 +148,9 @@ export function useDeviceRecognition(
       }),
       m.addListener("error", (e) => {
         // "no-speech" just means silence; anything else is worth reporting.
-        if (e.error !== "no-speech" && e.error !== "aborted") errorMessage.current = e.message || e.error;
+        if (e.error === "language-not-supported")
+          errorMessage.current = "This language can't be recognised offline on this phone. Install its offline speech model in the phone's settings.";
+        else if (e.error !== "no-speech" && e.error !== "aborted") errorMessage.current = e.message || e.error;
       }),
       m.addListener("end", () => {
         setConnected(false);
@@ -122,10 +160,12 @@ export function useDeviceRecognition(
     return () => subs.forEach((s) => s.remove());
   }, []);
 
-  const start = useCallback(async (locale: string, opts2: { echoCancellation?: boolean } = {}) => {
+  const start = useCallback(
+    async (locale: string, opts2: { echoCancellation?: boolean; offlineOnly?: boolean; languageName?: string } = {}) => {
     if (!sr) throw new Error("On-device speech recognition needs a development build (not available in Expo Go).");
     const perm = await sr.ExpoSpeechRecognitionModule.requestPermissionsAsync();
     if (!perm.granted) throw new Error("Allow microphone and speech recognition access in Settings.");
+    if (opts2.offlineOnly) await ensureOfflineSpeech(locale, opts2.languageName ?? locale);
     segments.current = [];
     splitter.reset();
     pending.current = "";
@@ -138,10 +178,14 @@ export function useDeviceRecognition(
       interimResults: true,
       continuous: true,
       addsPunctuation: true,
+      // Keep audio on the phone: never fall back to a cloud recogniser.
+      requiresOnDeviceRecognition: !!opts2.offlineOnly,
       // iOS: cancel the phone's own voice from the mic when speaking through the loudspeaker.
       iosVoiceProcessingEnabled: !!opts2.echoCancellation,
     });
-  }, []);
+    },
+    [],
+  );
 
   const stop = useCallback(async (): Promise<LiveResult> => {
     if (sr && active.current) {
