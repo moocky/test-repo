@@ -33,6 +33,8 @@ export async function translate(
   transcript: string,
   sourceLanguageName: string | null,
   targetLanguageName: string,
+  /** Earlier sentences of the same utterance (source language), for live segment-by-segment translation. */
+  context: string[] = [],
 ): Promise<TranslationResult> {
   const source = sourceLanguageName
     ? `The speaker selected ${sourceLanguageName} as their language.`
@@ -53,7 +55,12 @@ export async function translate(
     messages: [
       {
         role: "user",
-        content: `${source}\nTarget language: ${targetLanguageName}\n\n<transcript>\n${transcript}\n</transcript>`,
+        content:
+          `${source}\nTarget language: ${targetLanguageName}\n\n` +
+          (context.length
+            ? `This is a live, sentence-by-sentence translation. Earlier sentences from the same speaker, for context only (already translated, do NOT translate them again):\n<context>\n${context.join("\n")}\n</context>\n\nTranslate only this new segment, continuing naturally from the context:\n`
+            : "") +
+          `<transcript>\n${transcript}\n</transcript>`,
       },
     ],
   });

@@ -18,12 +18,14 @@ import { LANGUAGES, byCode, type Language } from "./src/languages";
 import { LanguagePicker } from "./src/components/LanguagePicker";
 import { MicButton } from "./src/components/MicButton";
 import { speechTranslate, textTranslate } from "./src/api";
-import { hasDeviceVoice, speak, stopSpeaking } from "./src/speech";
+import { enqueueSpeech, hasDeviceVoice, onSpeakingChange, speak, stopSpeaking } from "./src/speech";
 import { loadHistory, loadSettings, saveHistory, saveSettings, type Entry, type Settings } from "./src/storage";
 import { colors } from "./src/theme";
-import { useLiveTranscription } from "./src/useLiveTranscription";
+import { useLiveTranscription, type Segment } from "./src/useLiveTranscription";
 
 type Side = "A" | "B";
+type SegTranslation = { translation: string; detectedLanguage: string | null };
+type Turn = { source: Language | null; target: Language; speakLive: boolean };
 
 export default function App() {
   return (
@@ -43,7 +45,37 @@ function Translator() {
   const [typed, setTyped] = useState("");
   const startedAt = useRef(0);
 
-  const live = useLiveTranscription();
+  // Live translation of finished sentences while the speaker is still talking.
+  const [liveTranslations, setLiveTranslations] = useState<{ id: string; text: string | null }[]>([]);
+  const turn = useRef<Turn | null>(null);
+  const segPromises = useRef(new Map<string, Promise<SegTranslation>>());
+  const speakChain = useRef<Promise<void>>(Promise.resolve());
+
+  const translateSegment = (seg: Segment, previous: Segment[]) => {
+    const t = turn.current;
+    if (!t || segPromises.current.has(seg.id)) return;
+    setLiveTranslations((l) => [...l, { id: seg.id, text: null }]);
+    const context = previous.map((p) => p.text.trim()).slice(-3);
+    const promise = textTranslate(seg.text.trim(), t.source, t.target, context).then((r) => ({
+      translation: r.translation,
+      detectedLanguage: r.detectedLanguage ?? null,
+    }));
+    segPromises.current.set(seg.id, promise);
+    promise
+      .then((r) => setLiveTranslations((l) => l.map((x) => (x.id === seg.id ? { ...x, text: r.translation } : x))))
+      .catch(() => setLiveTranslations((l) => l.map((x) => (x.id === seg.id ? { ...x, text: "⚠︎" } : x))));
+    if (t.speakLive) {
+      // Keep spoken order = spoken order of the sentences, even if translations finish out of order.
+      speakChain.current = speakChain.current.then(() =>
+        promise.then((r) => void enqueueSpeech(r.translation, t.target)).catch(() => {}),
+      );
+    }
+  };
+
+  const live = useLiveTranscription({ onFinal: translateSegment });
+
+  // Half-duplex echo guard: don't feed the phone's own voice back into the recogniser.
+  useEffect(() => onSpeakingChange((speaking) => live.setMuted(speaking)), [live.setMuted]);
 
   useEffect(() => {
     loadSettings().then(setSettings);
@@ -80,7 +112,11 @@ function Translator() {
     }
     await stopSpeaking();
     await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-    const [source] = langsFor(side);
+    const [source, target] = langsFor(side);
+    segPromises.current = new Map();
+    speakChain.current = Promise.resolve();
+    setLiveTranslations([]);
+    turn.current = { source: autoDetect ? null : source, target, speakLive: settings!.autoSpeak && settings!.liveSpeak };
     try {
       await live.start(autoDetect ? null : source.stt);
     } catch (e) {
@@ -105,10 +141,18 @@ function Translator() {
 
       let r: { transcript: string; translation: string; detectedLanguage: string | null; audioBase64?: string };
       const src = autoDetect ? null : source;
+      let spokenLive = false;
       if (heard.transcript) {
-        // Live transcript is already final → only translation is left.
-        const t = await textTranslate(heard.transcript, src, target);
-        r = { transcript: heard.transcript, ...t };
+        // Most sentences were already translated while speaking; translate whatever is left
+        // (the last sentence, or any segment still partial when the stream closed).
+        heard.segments.forEach((seg, i) => translateSegment(seg, heard.segments.slice(0, i)));
+        const parts = await Promise.all(heard.segments.map((seg) => segPromises.current.get(seg.id)!));
+        r = {
+          transcript: heard.transcript,
+          translation: parts.map((p) => p.translation).join(" "),
+          detectedLanguage: parts.find((p) => p.detectedLanguage)?.detectedLanguage ?? null,
+        };
+        spokenLive = !!turn.current?.speakLive;
       } else if (heard.liveFailed && heard.fileUri) {
         // Live stream dropped: send the recorded file through the batch pipeline.
         const needServerVoice = settings!.autoSpeak && !(await hasDeviceVoice(target));
@@ -130,10 +174,13 @@ function Translator() {
         translation: r.translation,
         at: Date.now(),
       });
-      if (settings!.autoSpeak) await speak(r.translation, target, r.audioBase64);
+      setLiveTranslations([]);
+      if (settings!.autoSpeak && !spokenLive) await speak(r.translation, target, r.audioBase64);
     } catch (e) {
       Alert.alert("Translation failed", e instanceof Error ? e.message : String(e));
     } finally {
+      turn.current = null;
+      setLiveTranslations([]);
       setBusySide(null);
     }
   }
@@ -191,6 +238,13 @@ function Translator() {
         <View style={styles.toggles}>
           <Toggle label="Auto-detect spoken language" value={autoDetect} onChange={setAutoDetect} />
           <Toggle label="Speak translation" value={settings.autoSpeak} onChange={(v) => updateSettings({ autoSpeak: v })} />
+          {settings.autoSpeak && (
+            <Toggle
+              label="Speak each sentence while talking"
+              value={settings.liveSpeak}
+              onChange={(v) => updateSettings({ liveSpeak: v })}
+            />
+          )}
         </View>
 
         {/* Conversation */}
@@ -221,6 +275,8 @@ function Translator() {
             connected={live.connected}
             lang={recordingSide ? langsFor(recordingSide)[0] : langsFor(busySide!)[0]}
             autoDetect={autoDetect}
+            translations={liveTranslations}
+            target={recordingSide ? langsFor(recordingSide)[1] : langsFor(busySide!)[1]}
             color={(recordingSide ?? busySide) === "A" ? colors.accent : colors.accentB}
           />
         )}
@@ -278,9 +334,11 @@ function LiveCard(props: {
   connected: boolean;
   lang: Language;
   autoDetect: boolean;
+  translations: { id: string; text: string | null }[];
+  target: Language;
   color: string;
 }) {
-  const { text, listening, connected, lang, autoDetect, color } = props;
+  const { text, listening, connected, lang, autoDetect, translations, target, color } = props;
   const status = !listening ? "Translating…" : connected ? "Listening…" : "Connecting…";
   return (
     <View style={[styles.live, { borderColor: color }]}>
@@ -296,6 +354,17 @@ function LiveCard(props: {
       >
         {text || "Start speaking…"}
       </Text>
+      {translations.length > 0 && (
+        <View style={styles.liveTr}>
+          <Text style={styles.liveTrLabel}>{target.name}</Text>
+          <Text
+            style={[styles.liveTrText, target.rtl && { textAlign: "right", writingDirection: "rtl" }]}
+            numberOfLines={6}
+          >
+            {translations.map((t) => t.text ?? "…").join(" ")}
+          </Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -369,6 +438,9 @@ const styles = StyleSheet.create({
   liveHeader: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 },
   liveDot: { width: 8, height: 8, borderRadius: 4 },
   liveStatus: { color: colors.muted, fontSize: 12 },
-  liveText: { color: colors.text, fontSize: 18, lineHeight: 26 },
+  liveText: { color: colors.muted, fontSize: 16, lineHeight: 23 },
+  liveTr: { marginTop: 8, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.muted },
+  liveTrLabel: { color: colors.muted, fontSize: 11, marginBottom: 2 },
+  liveTrText: { color: colors.text, fontSize: 19, lineHeight: 27, fontWeight: "500" },
   mics: { flexDirection: "row", paddingVertical: 16, paddingHorizontal: 24 },
 });

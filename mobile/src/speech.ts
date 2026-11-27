@@ -36,14 +36,29 @@ export async function hasDeviceVoice(lang: Language) {
   return (await findDeviceVoice(lang)) !== null;
 }
 
+let queue: Promise<void> = Promise.resolve();
+let queueToken = 0;
+let activeCount = 0;
+const listeners = new Set<(speaking: boolean) => void>();
+const emit = () => listeners.forEach((l) => l(activeCount > 0));
+
+/** Subscribe to "is the app currently speaking a queued sentence". Returns an unsubscribe fn. */
+export function onSpeakingChange(fn: (speaking: boolean) => void) {
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+  };
+}
+
 export async function stopSpeaking() {
+  queueToken++; // drop anything still waiting in the queue
   Speech.stop();
   player?.pause();
 }
 
-/** Play MP3 audio delivered as base64 by the server. */
-export async function playBase64Mp3(base64: string) {
-  await stopSpeaking();
+/** Play MP3 audio delivered as base64 by the server; resolves when playback ends. */
+export async function playBase64Mp3(base64: string, interrupt = true): Promise<void> {
+  if (interrupt) await stopSpeaking();
   let uri: string;
   if (Platform.OS === "web") {
     uri = `data:audio/mpeg;base64,${base64}`;
@@ -53,8 +68,62 @@ export async function playBase64Mp3(base64: string) {
     uri = file.uri;
   }
   player?.remove();
-  player = createAudioPlayer(uri);
-  player.play();
+  const p = createAudioPlayer(uri);
+  player = p;
+  await new Promise<void>((resolve) => {
+    const sub = p.addListener("playbackStatusUpdate", (st) => {
+      if (st.didJustFinish) {
+        sub.remove();
+        resolve();
+      }
+    });
+    // Safety net in case the finish event never arrives.
+    setTimeout(() => {
+      sub.remove();
+      resolve();
+    }, 60_000);
+    p.play();
+  });
+}
+
+/** Speak and resolve when finished (device voice or server MP3). */
+async function speakToEnd(text: string, lang: Language): Promise<void> {
+  const voice = await findDeviceVoice(lang);
+  if (voice) {
+    await new Promise<void>((resolve) => {
+      Speech.speak(text, {
+        language: voice.language,
+        voice: voice.identifier,
+        onDone: () => resolve(),
+        onStopped: () => resolve(),
+        onError: () => resolve(),
+      });
+    });
+    return;
+  }
+  await playBase64Mp3(await serverTts(text, lang), false);
+}
+
+/**
+ * Queue a sentence to be spoken after anything already queued — used for live translation
+ * so consecutive sentences don't cut each other off.
+ */
+export function enqueueSpeech(text: string, lang: Language): Promise<void> {
+  const token = queueToken;
+  queue = queue.then(async () => {
+    if (token !== queueToken) return; // cancelled by stopSpeaking()
+    activeCount++;
+    emit();
+    try {
+      await speakToEnd(text, lang);
+    } catch {
+      // skip a sentence that fails to synthesize
+    } finally {
+      activeCount--;
+      emit();
+    }
+  });
+  return queue;
 }
 
 /**

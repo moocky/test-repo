@@ -67,7 +67,7 @@ app.post("/api/speech-translate", upload.single("audio"), async (req, res, next)
   }
 });
 
-/** POST /api/translate  { text, sourceName?, targetName } – typed-text translation */
+/** POST /api/translate  { text, sourceName?, targetName, context?: string[] } – text / live-segment translation */
 app.post("/api/translate", async (req, res, next) => {
   try {
     const text = str(req.body?.text);
@@ -76,7 +76,10 @@ app.post("/api/translate", async (req, res, next) => {
       res.status(400).json({ error: "Missing text or targetName" });
       return;
     }
-    res.json(await translate(text, str(req.body.sourceName), targetName));
+    const context = Array.isArray(req.body.context)
+      ? (req.body.context as unknown[]).filter((c): c is string => typeof c === "string").slice(-5)
+      : [];
+    res.json(await translate(text, str(req.body.sourceName), targetName, context));
   } catch (err) {
     next(err);
   }

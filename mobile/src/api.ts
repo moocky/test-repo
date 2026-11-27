@@ -41,11 +41,11 @@ export async function speechTranslate(
   return parse<SpeechTranslation>(res);
 }
 
-export async function textTranslate(text: string, source: Language | null, target: Language) {
+export async function textTranslate(text: string, source: Language | null, target: Language, context: string[] = []) {
   const res = await fetch(`${API_URL}/api/translate`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...headers() },
-    body: JSON.stringify({ text, sourceName: source?.name, targetName: target.name }),
+    body: JSON.stringify({ text, sourceName: source?.name, targetName: target.name, context }),
   });
   return parse<{ translation: string; detectedLanguage: string }>(res);
 }

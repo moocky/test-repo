@@ -30,11 +30,13 @@ function toPcm24k(buf: AudioStreamBuffer): ArrayBuffer {
   return out.buffer;
 }
 
-type Segment = { id: string; text: string; final: boolean };
+export type Segment = { id: string; text: string; final: boolean };
 
 export type LiveResult = {
   /** Full transcript from live recognition ("" if live recognition failed or heard nothing). */
   transcript: string;
+  /** Finished segments in spoken order. */
+  segments: Segment[];
   /** WAV file of the same speech, for the batch fallback (native only). */
   fileUri: string | null;
   liveFailed: boolean;
@@ -44,7 +46,11 @@ export type LiveResult = {
  * Streams microphone audio to the backend and exposes the transcript as it is spoken.
  * `liveText` updates several times per second while the user talks.
  */
-export function useLiveTranscription() {
+export function useLiveTranscription(opts: { onFinal?: (seg: Segment, previous: Segment[]) => void } = {}) {
+  const onFinalRef = useRef(opts.onFinal);
+  onFinalRef.current = opts.onFinal;
+  /** While true, mic audio is not sent (e.g. while the phone is speaking a translation → no echo). */
+  const muted = useRef(false);
   const onBufferRef = useRef<(b: AudioStreamBuffer) => void>(() => {});
   const { stream } = useAudioStream({
     sampleRate: TARGET_RATE,
@@ -64,10 +70,15 @@ export function useLiveTranscription() {
   const render = () => setLiveText(segments.current.map((s) => s.text).filter(Boolean).join(" "));
 
   const upsert = (id: string, text: string, final: boolean) => {
-    const seg = segments.current.find((s) => s.id === id);
+    let seg = segments.current.find((s) => s.id === id);
+    const wasFinal = seg?.final ?? false;
     if (seg) Object.assign(seg, { text, final });
-    else segments.current.push({ id, text, final });
+    else segments.current.push((seg = { id, text, final }));
     render();
+    if (final && !wasFinal && text.trim()) {
+      const previous = segments.current.filter((s) => s.final && s.id !== id && s.text.trim());
+      onFinalRef.current?.({ ...seg }, previous);
+    }
   };
 
   const start = useCallback(
@@ -104,8 +115,11 @@ export function useLiveTranscription() {
         doneWaiter.current?.();
       };
 
+      muted.current = false;
       onBufferRef.current = (b) => {
-        const pcm = toPcm24k(b);
+        let pcm = toPcm24k(b);
+        // Muted → send silence of equal length, so the server's VAD still sees the pause and closes the sentence.
+        if (muted.current) pcm = new ArrayBuffer(pcm.byteLength);
         if (socket.readyState === WebSocket.OPEN) socket.send(pcm);
         else if (socket.readyState === WebSocket.CONNECTING) pendingAudio.push(pcm);
       };
@@ -152,8 +166,9 @@ export function useLiveTranscription() {
     socket?.close();
     ws.current = null;
 
-    const transcript = segments.current.map((s) => s.text.trim()).filter(Boolean).join(" ");
-    return { transcript, fileUri, liveFailed: failed.current || !socket };
+    const segs = segments.current.filter((s) => s.text.trim());
+    const transcript = segs.map((s) => s.text.trim()).join(" ");
+    return { transcript, segments: segs, fileUri, liveFailed: failed.current || !socket };
   }, [stream]);
 
   /** Abort without waiting for results. */
@@ -166,5 +181,9 @@ export function useLiveTranscription() {
     setLiveText("");
   }, [stream]);
 
-  return { start, stop, cancel, liveText, connected };
+  const setMuted = useCallback((m: boolean) => {
+    muted.current = m;
+  }, []);
+
+  return { start, stop, cancel, setMuted, liveText, connected };
 }

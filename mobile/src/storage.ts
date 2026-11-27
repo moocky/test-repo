@@ -11,7 +11,13 @@ export type Entry = {
   at: number;
 };
 
-export type Settings = { langA: string; langB: string; autoSpeak: boolean };
+export type Settings = {
+  langA: string;
+  langB: string;
+  autoSpeak: boolean;
+  /** Speak each translated sentence as soon as it is ready, while the speaker is still talking. */
+  liveSpeak: boolean;
+};
 
 const HISTORY = "history.v1";
 const SETTINGS = "settings.v1";
@@ -26,7 +32,7 @@ async function load<T>(key: string, fallback: T): Promise<T> {
 }
 
 export const loadSettings = () =>
-  load<Settings>(SETTINGS, { langA: "he-IL", langB: "en-US", autoSpeak: true });
+  load<Settings>(SETTINGS, { langA: "he-IL", langB: "en-US", autoSpeak: true, liveSpeak: false });
 export const saveSettings = (s: Settings) => AsyncStorage.setItem(SETTINGS, JSON.stringify(s));
 
 export async function loadHistory(): Promise<Entry[]> {
