@@ -5,6 +5,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { transcribe } from "./stt.js";
 import { translate, TranslationRefusedError } from "./translate.js";
 import { synthesize } from "./tts.js";
+import { attachLiveTranscription } from "./live.js";
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
@@ -110,4 +111,5 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 const port = Number(process.env.PORT ?? 8787);
-app.listen(port, "0.0.0.0", () => console.log(`Speech translator API on :${port}`));
+const server = app.listen(port, "0.0.0.0", () => console.log(`Speech translator API on :${port}`));
+attachLiveTranscription(server);

@@ -13,12 +13,7 @@ import {
 } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
-import {
-  RecordingPresets,
-  requestRecordingPermissionsAsync,
-  setAudioModeAsync,
-  useAudioRecorder,
-} from "expo-audio";
+import { requestRecordingPermissionsAsync, setAudioModeAsync } from "expo-audio";
 import { LANGUAGES, byCode, type Language } from "./src/languages";
 import { LanguagePicker } from "./src/components/LanguagePicker";
 import { MicButton } from "./src/components/MicButton";
@@ -26,6 +21,7 @@ import { speechTranslate, textTranslate } from "./src/api";
 import { hasDeviceVoice, speak, stopSpeaking } from "./src/speech";
 import { loadHistory, loadSettings, saveHistory, saveSettings, type Entry, type Settings } from "./src/storage";
 import { colors } from "./src/theme";
+import { useLiveTranscription } from "./src/useLiveTranscription";
 
 type Side = "A" | "B";
 
@@ -47,7 +43,7 @@ function Translator() {
   const [typed, setTyped] = useState("");
   const startedAt = useRef(0);
 
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const live = useLiveTranscription();
 
   useEffect(() => {
     loadSettings().then(setSettings);
@@ -84,25 +80,42 @@ function Translator() {
     }
     await stopSpeaking();
     await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-    await recorder.prepareToRecordAsync();
-    recorder.record();
+    const [source] = langsFor(side);
+    try {
+      await live.start(autoDetect ? null : source.stt);
+    } catch (e) {
+      live.cancel();
+      Alert.alert("Microphone error", e instanceof Error ? e.message : String(e));
+      return;
+    }
     startedAt.current = Date.now();
     setRecordingSide(side);
   }
 
   async function stopAndTranslate(side: Side) {
     setRecordingSide(null);
-    await recorder.stop();
-    // Route playback back to the loudspeaker on iOS.
-    await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
-    const uri = recorder.uri;
-    if (!uri || Date.now() - startedAt.current < 500) return;
-
-    const [source, target] = langsFor(side);
+    const tooShort = Date.now() - startedAt.current < 500;
     setBusySide(side);
+    const [source, target] = langsFor(side);
     try {
-      const needServerVoice = settings!.autoSpeak && !(await hasDeviceVoice(target));
-      const r = await speechTranslate(uri, autoDetect ? null : source, target, needServerVoice);
+      const heard = await live.stop();
+      // Route playback back to the loudspeaker on iOS.
+      await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+      if (tooShort) return;
+
+      let r: { transcript: string; translation: string; detectedLanguage: string | null; audioBase64?: string };
+      const src = autoDetect ? null : source;
+      if (heard.transcript) {
+        // Live transcript is already final → only translation is left.
+        const t = await textTranslate(heard.transcript, src, target);
+        r = { transcript: heard.transcript, ...t };
+      } else if (heard.liveFailed && heard.fileUri) {
+        // Live stream dropped: send the recorded file through the batch pipeline.
+        const needServerVoice = settings!.autoSpeak && !(await hasDeviceVoice(target));
+        r = await speechTranslate(heard.fileUri, src, target, needServerVoice);
+      } else {
+        r = { transcript: "", translation: "", detectedLanguage: null };
+      }
       if (!r.transcript) {
         Alert.alert("Didn't catch that", "No speech was recognised. Try again a little closer to the mic.");
         return;
@@ -200,6 +213,18 @@ function Translator() {
           </Pressable>
         )}
 
+        {/* Live transcript while speaking */}
+        {(recordingSide || (busySide && live.liveText)) && (
+          <LiveCard
+            text={live.liveText}
+            listening={!!recordingSide}
+            connected={live.connected}
+            lang={recordingSide ? langsFor(recordingSide)[0] : langsFor(busySide!)[0]}
+            autoDetect={autoDetect}
+            color={(recordingSide ?? busySide) === "A" ? colors.accent : colors.accentB}
+          />
+        )}
+
         {/* Typed input */}
         <View style={styles.inputRow}>
           <TextInput
@@ -244,6 +269,34 @@ function Translator() {
         onSelect={(l) => updateSettings(picker === "A" ? { langA: l.code } : { langB: l.code })}
       />
     </SafeAreaView>
+  );
+}
+
+function LiveCard(props: {
+  text: string;
+  listening: boolean;
+  connected: boolean;
+  lang: Language;
+  autoDetect: boolean;
+  color: string;
+}) {
+  const { text, listening, connected, lang, autoDetect, color } = props;
+  const status = !listening ? "Translating…" : connected ? "Listening…" : "Connecting…";
+  return (
+    <View style={[styles.live, { borderColor: color }]}>
+      <View style={styles.liveHeader}>
+        <View style={[styles.liveDot, { backgroundColor: listening ? colors.danger : color }]} />
+        <Text style={styles.liveStatus}>
+          {status} · {autoDetect ? "auto-detect" : lang.name}
+        </Text>
+      </View>
+      <Text
+        style={[styles.liveText, !autoDetect && lang.rtl && { textAlign: "right", writingDirection: "rtl" }, !text && { color: colors.muted }]}
+        numberOfLines={6}
+      >
+        {text || "Start speaking…"}
+      </Text>
+    </View>
   );
 }
 
@@ -312,5 +365,10 @@ const styles = StyleSheet.create({
   input: { flex: 1, backgroundColor: colors.card, color: colors.text, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, fontSize: 16 },
   send: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.accent, alignItems: "center", justifyContent: "center" },
   sendText: { color: "#fff", fontSize: 18 },
+  live: { marginHorizontal: 12, marginBottom: 8, padding: 12, borderRadius: 14, borderWidth: 1.5, backgroundColor: colors.card },
+  liveHeader: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 6 },
+  liveDot: { width: 8, height: 8, borderRadius: 4 },
+  liveStatus: { color: colors.muted, fontSize: 12 },
+  liveText: { color: colors.text, fontSize: 18, lineHeight: 26 },
   mics: { flexDirection: "row", paddingVertical: 16, paddingHorizontal: 24 },
 });
