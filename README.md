@@ -57,6 +57,33 @@ npx eas-cli@latest build --platform all --profile production    # AAB + IPA לח
 ```
 לפני הפצה: לפרוס את `server/` לשרת עם HTTPS (Render / Fly.io / Railway / Cloud Run), להגדיר `APP_KEY` בשרת ו-`EXPO_PUBLIC_APP_KEY` באפליקציה, ולעדכן את `bundleIdentifier` / `package` ב-`mobile/app.json`.
 
+## העלאת השרת ל-Render
+
+הקובץ `render.yaml` בשורש הריפו מגדיר את השרת כ-Web Service (Node 22, אזור פרנקפורט, בדיקת תקינות ב-`/health`). WebSocket של התמלול החי עובד ב-Render בלי הגדרה נוספת.
+
+1. ב-[dashboard.render.com](https://dashboard.render.com): **New ← Blueprint**, מחברים את GitHub ובוחרים את `moocky/test-repo`. בוחרים את הענף שבו נמצא הקוד (או ממזגים קודם ל-`main`).
+2. Render יבקש את הערכים הסודיים: מדביקים את `ANTHROPIC_API_KEY` ואת `OPENAI_API_KEY`. את `APP_KEY` הוא מייצר לבד.
+3. **Apply**. הבנייה לוקחת כ-2–3 דקות. בסוף מקבלים כתובת כמו `https://polyglot-voice-api.onrender.com`.
+4. בדיקה: פותחים בדפדפן `https://<הכתובת>/health`, והתשובה צריכה להיות `{"ok":true}`.
+5. מעתיקים את הערך של `APP_KEY` (Service ← Environment).
+
+### חיבור האפליקציה לשרת
+- **פיתוח מקומי:** ב-`mobile/.env`:
+  ```
+  EXPO_PUBLIC_API_URL=https://polyglot-voice-api.onrender.com
+  EXPO_PUBLIC_APP_KEY=<הערך של APP_KEY>
+  ```
+- **בניות EAS:** הכתובת כבר מוגדרת ב-`mobile/eas.json` (בפרופילים preview ו-production). אם Render נתן כתובת אחרת, מעדכנים אותה שם. את המפתח מגדירים כמשתנה של EAS ולא בקוד:
+  ```bash
+  cd mobile
+  npx eas-cli@latest env:create --name EXPO_PUBLIC_APP_KEY --value <APP_KEY> --environment preview --environment production --visibility sensitive
+  ```
+
+### כדאי לדעת
+- **התוכנית החינמית נרדמת** אחרי 15 דקות בלי שימוש, והבקשה הראשונה אחרי זה לוקחת כדקה. לשימוש אמיתי כדאי לשנות ב-`render.yaml` ל-`plan: starter` (כ-7$ לחודש), שלא נרדם.
+- **`APP_KEY` הוא הגנה בסיסית בלבד.** הוא מונע ממי שמוצא את הכתובת להשתמש בשרת שלך על חשבונך, אבל הוא נשמר בתוך האפליקציה, ומי שמפרק אותה יכול לחלץ אותו. לאפליקציה ציבורית בהיקף גדול צריך גם הגבלת קצב (rate limiting) או התחברות משתמשים.
+- כל push לענף המחובר מפעיל בנייה ופריסה מחדש אוטומטית.
+
 ## API של השרת
 | Endpoint | קלט | פלט |
 |---|---|---|
