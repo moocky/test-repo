@@ -4,7 +4,10 @@ let _client: Anthropic | null = null;
 const claude = () => (_client ??= new Anthropic());
 
 export type TranslationResult = {
+  /** English name of the detected source language, e.g. "Spanish", "Egyptian Arabic". */
   detectedLanguage: string;
+  /** ISO 639-1 code (or ISO 639-3 when there is no 639-1 code), e.g. "es", "ar", "yue". */
+  detectedLanguageCode: string;
   translation: string;
 };
 
@@ -15,15 +18,18 @@ Translate it into the requested target language so it sounds natural when read a
 - Write numbers, dates and units the way a native speaker would say them.
 - Use the target language's native script.
 - Output only the translation, never commentary, notes or the original text.
-Also report the source language you detected, as its English name.`;
+Also report the source language you detected: its English name (be specific for clearly distinct
+varieties, e.g. "Cantonese", "Egyptian Arabic") and its ISO 639-1 code (ISO 639-3 if it has no 639-1 code).
+Judge the language from the transcript itself, even if it differs from the language the speaker selected.`;
 
 const SCHEMA = {
   type: "object",
   properties: {
     detected_language: { type: "string", description: "English name of the transcript's language" },
+    detected_language_code: { type: "string", description: "ISO 639-1 code, or ISO 639-3 if none" },
     translation: { type: "string" },
   },
-  required: ["detected_language", "translation"],
+  required: ["detected_language", "detected_language_code", "translation"],
   additionalProperties: false,
 } as const;
 
@@ -72,6 +78,10 @@ export async function translate(
   const text = response.content
     .flatMap((b) => (b.type === "text" ? [b.text] : []))
     .join("");
-  const parsed = JSON.parse(text) as { detected_language: string; translation: string };
-  return { detectedLanguage: parsed.detected_language, translation: parsed.translation.trim() };
+  const parsed = JSON.parse(text) as { detected_language: string; detected_language_code: string; translation: string };
+  return {
+    detectedLanguage: parsed.detected_language,
+    detectedLanguageCode: parsed.detected_language_code.trim().toLowerCase(),
+    translation: parsed.translation.trim(),
+  };
 }

@@ -7,6 +7,7 @@ export type SpeechTranslation = {
   transcript: string;
   translation: string;
   detectedLanguage: string | null;
+  detectedLanguageCode: string | null;
   audioBase64?: string;
 };
 
@@ -57,7 +58,7 @@ export async function textTranslate(text: string, source: Language | null, targe
     headers: { "Content-Type": "application/json", ...(await headers()) },
     body: JSON.stringify({ text, sourceName: source?.name, targetName: target.name, context }),
   });
-  return parse<{ translation: string; detectedLanguage: string }>(res);
+  return parse<{ translation: string; detectedLanguage: string; detectedLanguageCode: string }>(res);
 }
 
 export async function serverTts(text: string, target: Language): Promise<string> {
