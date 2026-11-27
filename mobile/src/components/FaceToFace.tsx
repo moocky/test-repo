@@ -14,6 +14,7 @@ type Props = {
   liveText: string;
   liveTranslations: { id: string; text: string | null }[];
   connected: boolean;
+  headphones: boolean;
   recordingSide: Side | null;
   busySide: Side | null;
   onMic: (side: Side) => void;
@@ -34,7 +35,7 @@ export function FaceToFace(props: Props) {
       <Half {...props} side="B" me={langB} other={langA} color={colors.accentB} flipped />
       <View style={styles.divider}>
         <Text style={styles.dividerText} numberOfLines={1}>
-          {langA.native} ⇄ {langB.native}
+          {props.headphones ? "🎧  " : ""}{langA.native} ⇄ {langB.native}
         </Text>
         <Pressable onPress={onExit} style={styles.exit} hitSlop={10} accessibilityLabel="Exit face-to-face mode">
           <Text style={styles.exitText}>✕</Text>

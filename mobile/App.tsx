@@ -23,6 +23,7 @@ import { enqueueSpeech, hasDeviceVoice, onSpeakingChange, speak, stopSpeaking } 
 import { loadHistory, loadSettings, saveHistory, saveSettings, type Entry, type Settings } from "./src/storage";
 import { colors } from "./src/theme";
 import { useLiveTranscription, type Segment } from "./src/useLiveTranscription";
+import { useHeadphones } from "./src/useHeadphones";
 
 type Side = "A" | "B";
 type SegTranslation = { translation: string; detectedLanguage: string | null };
@@ -75,8 +76,25 @@ function Translator() {
 
   const live = useLiveTranscription({ onFinal: translateSegment });
 
-  // Half-duplex echo guard: don't feed the phone's own voice back into the recogniser.
-  useEffect(() => onSpeakingChange((speaking) => live.setMuted(speaking)), [live.setMuted]);
+  // Echo guard: through the loudspeaker the mic would hear the translation and transcribe it,
+  // so the mic is muted while the app speaks. With headphones there is no echo → keep it open.
+  const headphones = useHeadphones();
+  const onHeadphones = headphones.detectable ? headphones.connected : !!settings?.manualHeadphones;
+  const onHeadphonesRef = useRef(onHeadphones);
+  onHeadphonesRef.current = onHeadphones;
+  const speakingNow = useRef(false);
+  useEffect(
+    () =>
+      onSpeakingChange((speaking) => {
+        speakingNow.current = speaking;
+        live.setMuted(speaking && !onHeadphonesRef.current);
+      }),
+    [live.setMuted],
+  );
+  // Re-evaluate immediately if headphones are plugged in / removed mid-sentence.
+  useEffect(() => {
+    live.setMuted(speakingNow.current && !onHeadphones);
+  }, [onHeadphones, live.setMuted]);
 
   useEffect(() => {
     loadSettings().then(setSettings);
@@ -241,6 +259,7 @@ function Translator() {
           liveText={live.liveText}
           liveTranslations={liveTranslations}
           connected={live.connected}
+          headphones={onHeadphones}
           recordingSide={recordingSide}
           busySide={busySide}
           onMic={onMic}
@@ -287,6 +306,19 @@ function Translator() {
               onChange={(v) => updateSettings({ liveSpeak: v })}
             />
           )}
+          {!headphones.detectable && (
+            <Toggle
+              label="I'm wearing headphones"
+              value={settings.manualHeadphones}
+              onChange={(v) => updateSettings({ manualHeadphones: v })}
+            />
+          )}
+          <HeadphoneStatus
+            on={onHeadphones}
+            name={headphones.route?.headphones ? headphones.route.name : null}
+            liveSpeak={settings.autoSpeak && settings.liveSpeak}
+            onEnableLiveSpeak={() => updateSettings({ autoSpeak: true, liveSpeak: true })}
+          />
         </View>
 
         {/* Conversation */}
@@ -362,6 +394,28 @@ function Translator() {
 
       {languagePicker}
     </SafeAreaView>
+  );
+}
+
+function HeadphoneStatus(props: { on: boolean; name: string | null; liveSpeak: boolean; onEnableLiveSpeak: () => void }) {
+  const { on, name, liveSpeak, onEnableLiveSpeak } = props;
+  if (!on) {
+    return liveSpeak ? (
+      <Text style={styles.hpHint}>🔈 Loudspeaker: the mic pauses while a translation is spoken (prevents echo).</Text>
+    ) : null;
+  }
+  return (
+    <View style={styles.hpRow}>
+      <Text style={styles.hpText} numberOfLines={2}>
+        🎧 {name || "Headphones"}
+        {liveSpeak ? " · mic stays on while translations play" : ""}
+      </Text>
+      {!liveSpeak && (
+        <Pressable onPress={onEnableLiveSpeak} hitSlop={8}>
+          <Text style={styles.hpAction}>Speak live</Text>
+        </Pressable>
+      )}
+    </View>
   );
 }
 
@@ -455,6 +509,10 @@ const styles = StyleSheet.create({
   swapText: { color: colors.text, fontSize: 22 },
   f2fBtn: { marginHorizontal: 12, marginBottom: 8, paddingVertical: 10, borderRadius: 12, backgroundColor: colors.cardAlt, alignItems: "center" },
   f2fText: { color: colors.text, fontSize: 15, fontWeight: "600" },
+  hpRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, paddingVertical: 4 },
+  hpText: { color: colors.accentB, fontSize: 13, flex: 1 },
+  hpAction: { color: colors.accent, fontSize: 13, fontWeight: "600" },
+  hpHint: { color: colors.muted, fontSize: 12, paddingVertical: 4 },
   toggles: { paddingHorizontal: 16, gap: 4 },
   toggle: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   toggleLabel: { color: colors.muted, fontSize: 14 },
