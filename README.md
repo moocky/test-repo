@@ -34,6 +34,20 @@ cd mobile
 npx eas-cli@latest build --platform android --profile free
 ```
 
+## בניית APK מקומית (בלי ענן ובלי Expo)
+
+כך נבנה קובץ ה-APK של מצב "במכשיר בלבד". צריך JDK 17 ו-Android SDK (platform 37, build-tools 37.0.0, NDK 27.1.12297006). Android Studio מתקין את כולם, ובהתקנה שלו מאשרים את רישיונות ה-SDK.
+```bash
+cd mobile
+npm install
+npx expo prebuild --platform android      # יוצר את android/ (לא נשמר ב-git)
+cd android
+./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a
+# → android/app/build/outputs/apk/release/app-release.apk
+```
+- **בלי `mobile/.env`**, או עם `EXPO_PUBLIC_API_URL` ריק, האפליקציה נבנית במצב "במכשיר" בלבד, בלי שום כתובת שרת.
+- **החתימה היא מפתח debug.** זה מספיק להתקנה ישירה, אבל לא ל-Google Play.
+
 ## מבנה
 
 ```
