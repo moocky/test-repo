@@ -1,0 +1,8 @@
+{
+  "name": "audio-route",
+  "version": "1.0.0",
+  "description": "Reports whether audio is playing through headphones (wired, Bluetooth, USB) and notifies on route changes.",
+  "main": "index.ts",
+  "license": "MIT",
+  "private": true
+}

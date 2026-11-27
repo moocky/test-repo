@@ -1,0 +1,33 @@
+# Render Blueprint – deploys the backend in ./server as a Node web service.
+# Render dashboard → New → Blueprint → pick this repository.
+services:
+  - type: web
+    name: polyglot-voice-api
+    runtime: node
+    rootDir: server
+    region: frankfurt          # closest Render region to Israel / Europe
+    plan: free                 # free sleeps after 15 min idle (~1 min cold start) – use "starter" for real use
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Secrets: Render asks for these when the Blueprint is created (never commit them).
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      # Shared secret the app sends (x-app-key header / ?key= on the WebSocket).
+      # Render generates a random value; copy it into the app's EXPO_PUBLIC_APP_KEY.
+      - key: APP_KEY
+        generateValue: true
+      # Rate limiting – see server/.env.example for all knobs. Change here or in the dashboard.
+      - key: TRUST_PROXY
+        value: "1"
+      - key: RATE_LIMIT_DEVICE_PER_MINUTE
+        value: "40"
+      - key: RATE_LIMIT_DEVICE_PER_DAY
+        value: "600"
+      - key: LIVE_MAX_SECONDS
+        value: "180"
