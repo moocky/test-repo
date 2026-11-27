@@ -6,7 +6,7 @@ services:
     runtime: node
     rootDir: server
     region: frankfurt          # closest Render region to Israel / Europe
-    plan: starter              # always on (~$7/month). "free" sleeps after 15 min idle (~1 min cold start)
+    plan: free                 # free sleeps after 15 min idle (~1 min cold start) – use "starter" for real use
     buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /health
