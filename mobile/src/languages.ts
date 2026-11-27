@@ -138,3 +138,32 @@ export const AUTO_DETECT = "auto";
 
 export const byCode = (code: string): Language | undefined =>
   LANGUAGES.find((l) => l.code === code);
+
+const ISO_ALIASES: Record<string, string> = { iw: "he", in: "id", ji: "yi", tl: "fil", nb: "no", jw: "jv", cmn: "zh" };
+
+/** All names a language can be referred to by: "Filipino (Tagalog)" → filipino (tagalog), filipino, tagalog. */
+function names(l: Language): string[] {
+  const n = l.name.toLowerCase();
+  const out = [n];
+  const m = n.match(/^(.*?)\s*\((.*)\)$/);
+  if (m) out.push(m[1], ...m[2].split("/").map((s) => s.trim()));
+  return out;
+}
+
+/**
+ * Map the server's detection (English name + ISO 639 code) to one of our languages.
+ * The name wins when it is specific ("Egyptian Arabic", "Cantonese"); otherwise the ISO code picks
+ * the most widely spoken variety, because LANGUAGES is ordered by number of speakers.
+ */
+export function resolveLanguage(name?: string | null, iso?: string | null): Language | null {
+  const n = name?.trim().toLowerCase();
+  if (n) {
+    const byName = LANGUAGES.find((l) => names(l).includes(n));
+    if (byName) return byName;
+  }
+  const code = iso?.trim().toLowerCase();
+  if (!code) return null;
+  const want = new Set([code, ISO_ALIASES[code] ?? code]);
+  for (const [alias, canon] of Object.entries(ISO_ALIASES)) if (want.has(canon)) want.add(alias);
+  return LANGUAGES.find((l) => want.has(l.code.split("-")[0].toLowerCase()) || (l.stt !== null && want.has(l.stt))) ?? null;
+}

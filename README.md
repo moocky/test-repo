@@ -26,7 +26,8 @@ server/   שרת Node/Express שמחזיק את מפתחות ה-API (לעולם 
 - **זיהוי אוזניות** (🎧): מודול נייטיב מקומי (`mobile/modules/audio-route`, Swift + Kotlin) מזהה אוזניות חוטיות, Bluetooth ו-USB, ומתעדכן בזמן חיבור וניתוק. עם אוזניות המיקרופון נשאר פתוח בזמן הקראה חיה, כי אין הד. ברמקול הוא מושתק. ב-Expo Go ובדפדפן, שבהם המודול לא קיים, מופיע מתג ידני "I'm wearing headphones".
 - גיבוי: במקביל נשמר קובץ WAV. אם החיבור החי נופל, הקובץ נשלח לתמלול רגיל ושום דבר לא הולך לאיבוד.
 - כל הודעה מציגה את **התמלול המקורי** ואת **התרגום**, עם כפתור 🔊 להשמעה חוזרת. תמיכה ב-RTL (עברית, ערבית, פרסית, אורדו...).
-- זיהוי שפה אוטומטי, הקלדת טקסט במקום דיבור, היסטוריה נשמרת במכשיר.
+- **זיהוי שפה אוטומטי לכל צד:** בבחירת השפה של כל צד יש אפשרות "🔍 Auto-detect". הצד הזה מתחיל כ"שפה לא ידועה", ובפעם הראשונה שהוא מדבר האפליקציה מזהה את השפה מתוך הדיבור, מכל 116 השפות, ונועלת אותה לצד הזה (מוצג "Spanish · detected"). אם הוא עובר לדבר בשפה אחרת, הזיהוי מתעדכן. עד שהצד האוטומטי מדבר בפעם הראשונה, אי אפשר לתרגם אליו, ולכן המיקרופון של הצד השני מושבת. שני הצדדים לא יכולים להיות אוטומטיים לפני שאחד מהם זוהה.
+- הקלדת טקסט במקום דיבור, היסטוריה נשמרת במכשיר.
 - שפות שמסומנות `speech beta` – מודל התמלול לא תומך בהן רשמית, ולכן דיוק התמלול נמוך יותר (התרגום וההקראה עובדים כרגיל).
 
 ## הרצה
@@ -105,8 +106,8 @@ npx eas-cli@latest build --platform all --profile production    # AAB + IPA לח
 ## API של השרת
 | Endpoint | קלט | פלט |
 |---|---|---|
-| `POST /api/speech-translate` | multipart: `audio`, `sourceStt`, `sourceName`, `targetName`, `serverTts` | `{ transcript, translation, detectedLanguage, audioBase64? }` |
-| `POST /api/translate` | `{ text, sourceName?, targetName, context?: string[] }` | `{ translation, detectedLanguage }` |
+| `POST /api/speech-translate` | multipart: `audio`, `sourceStt`, `sourceName`, `targetName`, `serverTts` | `{ transcript, translation, detectedLanguage, detectedLanguageCode, audioBase64? }` |
+| `POST /api/translate` | `{ text, sourceName?, targetName, context?: string[] }` | `{ translation, detectedLanguage, detectedLanguageCode }` |
 | `POST /api/tts` | `{ text, languageName }` | `{ audioBase64 }` (MP3) |
 | `GET /health` | – | `{ ok: true }` |
 | `WS /ws/transcribe?lang=&key=` | פריימים בינאריים PCM16 מונו 24kHz, ואז `{"type":"stop"}` | `ready` / `partial` / `final` / `done` / `error` |

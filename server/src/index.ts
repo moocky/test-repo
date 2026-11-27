@@ -55,7 +55,7 @@ app.post("/api/speech-translate", rateLimit, upload.single("audio"), async (req,
       str(req.body.sourceStt),
     );
     if (!transcript) {
-      res.json({ transcript: "", translation: "", detectedLanguage: null });
+      res.json({ transcript: "", translation: "", detectedLanguage: null, detectedLanguageCode: null });
       return;
     }
     const result = await translate(transcript, str(req.body.sourceName), targetName);

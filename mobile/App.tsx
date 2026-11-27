@@ -14,7 +14,7 @@ import {
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { requestRecordingPermissionsAsync, setAudioModeAsync } from "expo-audio";
-import { LANGUAGES, byCode, type Language } from "./src/languages";
+import { LANGUAGES, byCode, resolveLanguage, type Language } from "./src/languages";
 import { LanguagePicker } from "./src/components/LanguagePicker";
 import { MicButton } from "./src/components/MicButton";
 import { FaceToFace } from "./src/components/FaceToFace";
@@ -26,8 +26,9 @@ import { useLiveTranscription, type Segment } from "./src/useLiveTranscription";
 import { useHeadphones } from "./src/useHeadphones";
 
 type Side = "A" | "B";
-type SegTranslation = { translation: string; detectedLanguage: string | null };
-type Turn = { source: Language | null; target: Language; speakLive: boolean };
+type SegTranslation = { translation: string; detectedLanguage: string | null; detectedLanguageCode: string | null };
+type Turn = { side: Side; source: Language | null; target: Language; speakLive: boolean };
+const other = (side: Side): Side => (side === "A" ? "B" : "A");
 
 export default function App() {
   return (
@@ -39,7 +40,6 @@ export default function App() {
 
 function Translator() {
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [autoDetect, setAutoDetect] = useState(false);
   const [history, setHistory] = useState<Entry[]>([]);
   const [picker, setPicker] = useState<Side | null>(null);
   const [recordingSide, setRecordingSide] = useState<Side | null>(null);
@@ -58,10 +58,15 @@ function Translator() {
     if (!t || segPromises.current.has(seg.id)) return;
     setLiveTranslations((l) => [...l, { id: seg.id, text: null }]);
     const context = previous.map((p) => p.text.trim()).slice(-3);
-    const promise = textTranslate(seg.text.trim(), t.source, t.target, context).then((r) => ({
-      translation: r.translation,
-      detectedLanguage: r.detectedLanguage ?? null,
-    }));
+    const promise = textTranslate(seg.text.trim(), t.source, t.target, context).then((r) => {
+      // Lock in the speaker's language as soon as the first sentence is understood.
+      markDetected(t.side, r.detectedLanguage, r.detectedLanguageCode);
+      return {
+        translation: r.translation,
+        detectedLanguage: r.detectedLanguage ?? null,
+        detectedLanguageCode: r.detectedLanguageCode ?? null,
+      };
+    });
     segPromises.current.set(seg.id, promise);
     promise
       .then((r) => setLiveTranslations((l) => l.map((x) => (x.id === seg.id ? { ...x, text: r.translation } : x))))
@@ -115,6 +120,27 @@ function Translator() {
     });
   }, []);
 
+  /**
+   * A side in auto mode adopts the language it was just heard speaking. Returns the resolved language.
+   * Ignored when it equals the other side's language (most likely the wrong mic was tapped).
+   */
+  const markDetected = useCallback((side: Side, name?: string | null, iso?: string | null) => {
+    const lang = resolveLanguage(name, iso);
+    if (!lang) return null;
+    setSettings((s) => {
+      if (!s) return s;
+      const auto = side === "A" ? s.autoA : s.autoB;
+      const otherCode = side === "A" ? s.langB : s.langA;
+      const current = side === "A" ? s.langA : s.langB;
+      const detected = side === "A" ? s.detectedA : s.detectedB;
+      if (!auto || lang.code === otherCode || (detected && lang.code === current)) return s;
+      const next = side === "A" ? { ...s, langA: lang.code, detectedA: true } : { ...s, langB: lang.code, detectedB: true };
+      saveSettings(next);
+      return next;
+    });
+    return lang;
+  }, []);
+
   const addEntry = useCallback((e: Entry) => {
     setHistory((h) => {
       const next = [e, ...h];
@@ -128,8 +154,17 @@ function Translator() {
   const langA = byCode(settings.langA) ?? LANGUAGES[0];
   const langB = byCode(settings.langB) ?? LANGUAGES[1];
   const langsFor = (side: Side): [Language, Language] => (side === "A" ? [langA, langB] : [langB, langA]);
+  const isAuto = (side: Side) => (side === "A" ? settings.autoA : settings.autoB);
+  /** False while a side is in auto mode and hasn't spoken yet – nothing can be translated *into* it. */
+  const isKnown = (side: Side) => !isAuto(side) || (side === "A" ? settings.detectedA : settings.detectedB);
+  const waitForOther = () =>
+    Alert.alert(
+      "Language not detected yet",
+      "The other person's language is set to auto-detect. Let them speak first, or pick their language.",
+    );
 
   async function startRecording(side: Side) {
+    if (!isKnown(other(side))) return waitForOther();
     const perm = await requestRecordingPermissionsAsync();
     if (!perm.granted) {
       Alert.alert("Microphone needed", "Allow microphone access in Settings to translate speech.");
@@ -141,9 +176,11 @@ function Translator() {
     segPromises.current = new Map();
     speakChain.current = Promise.resolve();
     setLiveTranslations([]);
-    turn.current = { source: autoDetect ? null : source, target, speakLive: settings!.autoSpeak && settings!.liveSpeak };
+    const auto = isAuto(side);
+    turn.current = { side, source: auto ? null : source, target, speakLive: settings!.autoSpeak && settings!.liveSpeak };
     try {
-      await live.start(autoDetect ? null : source.stt);
+      // Auto mode: no language hint, so speech-to-text identifies the language itself.
+      await live.start(auto ? null : source.stt);
     } catch (e) {
       live.cancel();
       Alert.alert("Microphone error", e instanceof Error ? e.message : String(e));
@@ -167,8 +204,14 @@ function Translator() {
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
       if (tooShort) return;
 
-      let r: { transcript: string; translation: string; detectedLanguage: string | null; audioBase64?: string };
-      const src = autoDetect ? null : source;
+      let r: {
+        transcript: string;
+        translation: string;
+        detectedLanguage: string | null;
+        detectedLanguageCode: string | null;
+        audioBase64?: string;
+      };
+      const src = isAuto(side) ? null : source;
       let spokenLive = false;
       if (heard.transcript) {
         // Most sentences were already translated while speaking; translate whatever is left
@@ -179,6 +222,7 @@ function Translator() {
           transcript: heard.transcript,
           translation: parts.map((p) => p.translation).join(" "),
           detectedLanguage: parts.find((p) => p.detectedLanguage)?.detectedLanguage ?? null,
+          detectedLanguageCode: parts.find((p) => p.detectedLanguageCode)?.detectedLanguageCode ?? null,
         };
         spokenLive = !!turn.current?.speakLive;
       } else if (heard.rateLimited) {
@@ -188,16 +232,17 @@ function Translator() {
         const needServerVoice = settings!.autoSpeak && !(await hasDeviceVoice(target));
         r = await speechTranslate(heard.fileUri, src, target, needServerVoice);
       } else {
-        r = { transcript: "", translation: "", detectedLanguage: null };
+        r = { transcript: "", translation: "", detectedLanguage: null, detectedLanguageCode: null };
       }
       if (!r.transcript) {
         Alert.alert("Didn't catch that", "No speech was recognised. Try again a little closer to the mic.");
         return;
       }
+      const heardIn = markDetected(side, r.detectedLanguage, r.detectedLanguageCode);
       addEntry({
         id: `${Date.now()}`,
         side,
-        sourceCode: autoDetect ? null : source.code,
+        sourceCode: src ? source.code : (heardIn?.code ?? null),
         detected: r.detectedLanguage,
         targetCode: target.code,
         transcript: r.transcript,
@@ -225,14 +270,17 @@ function Translator() {
   async function onSendTyped() {
     const text = typed.trim();
     if (!text) return;
+    if (!isKnown("B")) return waitForOther();
     setTyped("");
     setBusySide("A");
     try {
-      const r = await textTranslate(text, autoDetect ? null : langA, langB);
+      const autoA = isAuto("A");
+      const r = await textTranslate(text, autoA ? null : langA, langB);
+      const typedIn = markDetected("A", r.detectedLanguage, r.detectedLanguageCode);
       addEntry({
         id: `${Date.now()}`,
         side: "A",
-        sourceCode: autoDetect ? null : langA.code,
+        sourceCode: autoA ? (typedIn?.code ?? null) : langA.code,
         detected: r.detectedLanguage,
         targetCode: langB.code,
         transcript: text,
@@ -261,7 +309,17 @@ function Translator() {
       visible={picker !== null}
       selected={picker === "A" ? langA.code : langB.code}
       onClose={() => setPicker(null)}
-      onSelect={(l) => updateSettings(picker === "A" ? { langA: l.code } : { langB: l.code })}
+      onSelect={(l) => updateSettings(picker === "A" ? { langA: l.code, autoA: false } : { langB: l.code, autoB: false })}
+      auto={picker !== null && isAuto(picker)}
+      onSelectAuto={() => {
+        if (picker === null) return;
+        // Both sides unknown = nothing to translate into. One side needs a known language.
+        if (!isKnown(other(picker))) {
+          Alert.alert("Pick one language", "Both sides can't be auto-detect before either has spoken. Choose a language for the other side first.");
+          return;
+        }
+        updateSettings(picker === "A" ? { autoA: true, detectedA: false } : { autoB: true, detectedB: false });
+      }}
       flipped={settings.faceToFace && picker === "B"}
     />
   );
@@ -278,6 +336,10 @@ function Translator() {
           liveTranslations={liveTranslations}
           connected={live.connected}
           headphones={onHeadphones}
+          autoA={settings.autoA}
+          autoB={settings.autoB}
+          knownA={isKnown("A")}
+          knownB={isKnown("B")}
           recordingSide={recordingSide}
           busySide={busySide}
           onMic={onMic}
@@ -299,15 +361,24 @@ function Translator() {
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         {/* Language bar */}
         <View style={styles.langBar}>
-          <LangButton lang={langA} color={colors.accent} onPress={() => setPicker("A")} />
+          <LangButton lang={langA} auto={settings.autoA} known={isKnown("A")} color={colors.accent} onPress={() => setPicker("A")} />
           <Pressable
-            onPress={() => updateSettings({ langA: langB.code, langB: langA.code })}
+            onPress={() =>
+              updateSettings({
+                langA: langB.code,
+                langB: langA.code,
+                autoA: settings.autoB,
+                autoB: settings.autoA,
+                detectedA: settings.detectedB,
+                detectedB: settings.detectedA,
+              })
+            }
             style={styles.swap}
             accessibilityLabel="Swap languages"
           >
             <Text style={styles.swapText}>⇄</Text>
           </Pressable>
-          <LangButton lang={langB} color={colors.accentB} onPress={() => setPicker("B")} />
+          <LangButton lang={langB} auto={settings.autoB} known={isKnown("B")} color={colors.accentB} onPress={() => setPicker("B")} />
         </View>
 
         <Pressable onPress={() => updateSettings({ faceToFace: true })} style={styles.f2fBtn}>
@@ -315,7 +386,6 @@ function Translator() {
         </Pressable>
 
         <View style={styles.toggles}>
-          <Toggle label="Auto-detect spoken language" value={autoDetect} onChange={setAutoDetect} />
           <Toggle label="Speak translation" value={settings.autoSpeak} onChange={(v) => updateSettings({ autoSpeak: v })} />
           {settings.autoSpeak && (
             <Toggle
@@ -366,7 +436,8 @@ function Translator() {
             listening={!!recordingSide}
             connected={live.connected}
             lang={recordingSide ? langsFor(recordingSide)[0] : langsFor(busySide!)[0]}
-            autoDetect={autoDetect}
+            auto={isAuto(recordingSide ?? busySide!)}
+            known={isKnown(recordingSide ?? busySide!)}
             translations={liveTranslations}
             target={recordingSide ? langsFor(recordingSide)[1] : langsFor(busySide!)[1]}
             color={(recordingSide ?? busySide) === "A" ? colors.accent : colors.accentB}
@@ -442,23 +513,26 @@ function LiveCard(props: {
   listening: boolean;
   connected: boolean;
   lang: Language;
-  autoDetect: boolean;
+  /** Speaker's side is in auto-detect mode; `known` = its language was already detected. */
+  auto: boolean;
+  known: boolean;
   translations: { id: string; text: string | null }[];
   target: Language;
   color: string;
 }) {
-  const { text, listening, connected, lang, autoDetect, translations, target, color } = props;
+  const { text, listening, connected, lang, auto, known, translations, target, color } = props;
+  const detecting = auto && !known;
   const status = !listening ? "Translating…" : connected ? "Listening…" : "Connecting…";
   return (
     <View style={[styles.live, { borderColor: color }]}>
       <View style={styles.liveHeader}>
         <View style={[styles.liveDot, { backgroundColor: listening ? colors.danger : color }]} />
         <Text style={styles.liveStatus}>
-          {status} · {autoDetect ? "auto-detect" : lang.name}
+          {status} · {detecting ? "🔍 detecting language" : auto ? `${lang.name} 🔍` : lang.name}
         </Text>
       </View>
       <Text
-        style={[styles.liveText, !autoDetect && lang.rtl && { textAlign: "right", writingDirection: "rtl" }, !text && { color: colors.muted }]}
+        style={[styles.liveText, !detecting && lang.rtl && { textAlign: "right", writingDirection: "rtl" }, !text && { color: colors.muted }]}
         numberOfLines={6}
       >
         {text || "Start speaking…"}
@@ -478,11 +552,16 @@ function LiveCard(props: {
   );
 }
 
-function LangButton({ lang, color, onPress }: { lang: Language; color: string; onPress: () => void }) {
+function LangButton(props: { lang: Language; auto: boolean; known: boolean; color: string; onPress: () => void }) {
+  const { lang, auto, known, color, onPress } = props;
   return (
     <Pressable onPress={onPress} style={[styles.langBtn, { borderColor: color }]}>
-      <Text style={styles.langName} numberOfLines={1}>{lang.native}</Text>
-      <Text style={styles.langSub} numberOfLines={1}>{lang.name} ▾</Text>
+      <Text style={styles.langName} numberOfLines={1}>
+        {auto && !known ? "🔍 Auto-detect" : lang.native}
+      </Text>
+      <Text style={styles.langSub} numberOfLines={1}>
+        {!auto ? lang.name : known ? `${lang.name} · detected` : "Speak to detect"} ▾
+      </Text>
     </Pressable>
   );
 }

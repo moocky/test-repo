@@ -15,6 +15,11 @@ type Props = {
   liveTranslations: { id: string; text: string | null }[];
   connected: boolean;
   headphones: boolean;
+  autoA: boolean;
+  autoB: boolean;
+  /** False while a side is in auto mode and hasn't spoken yet. */
+  knownA: boolean;
+  knownB: boolean;
   recordingSide: Side | null;
   busySide: Side | null;
   onMic: (side: Side) => void;
@@ -35,7 +40,8 @@ export function FaceToFace(props: Props) {
       <Half {...props} side="B" me={langB} other={langA} color={colors.accentB} flipped />
       <View style={styles.divider}>
         <Text style={styles.dividerText} numberOfLines={1}>
-          {props.headphones ? "🎧  " : ""}{langA.native} ⇄ {langB.native}
+          {props.headphones ? "🎧  " : ""}
+          {props.knownA ? langA.native : "🔍"} ⇄ {props.knownB ? langB.native : "🔍"}
         </Text>
         <Pressable onPress={onExit} style={styles.exit} hitSlop={10} accessibilityLabel="Exit face-to-face mode">
           <Text style={styles.exitText}>✕</Text>
@@ -55,6 +61,9 @@ function Half(
   const rtl = (l?: Language) => (l?.rtl ? ({ writingDirection: "rtl" } as const) : null);
 
   const iSpeak = recordingSide === side || busySide === side;
+  const auto = side === "A" ? props.autoA : props.autoB;
+  const meKnown = side === "A" ? props.knownA : props.knownB;
+  const otherKnown = side === "A" ? props.knownB : props.knownA;
   const theySpeak = recordingSide === otherSide || busySide === otherSide;
   const lastFromThem = history.find((e) => e.side === otherSide);
   const lastFromMe = history.find((e) => e.side === side);
@@ -95,13 +104,21 @@ function Half(
       </Pressable>
     );
   } else {
-    main = <Text style={[styles.hint, rtl(me)]}>{me.native} · 🎤</Text>;
+    main = !meKnown ? (
+      // Language unknown: nothing to read yet, the person just needs to talk.
+      <Text style={styles.hint}>🔍 🎤 …</Text>
+    ) : !otherKnown ? (
+      // Other side is still auto-detecting: they must speak first.
+      <Text style={styles.hint}>⏳ 🔍</Text>
+    ) : (
+      <Text style={[styles.hint, rtl(me)]}>{me.native} · 🎤</Text>
+    );
   }
 
   return (
     <View style={[styles.half, flipped && styles.flipped, { borderColor: color }]}>
       <Pressable onPress={() => props.onPickLanguage(side)} style={[styles.langChip, { borderColor: color }]}>
-        <Text style={styles.langChipText}>{me.native} ▾</Text>
+        <Text style={styles.langChipText}>{!meKnown ? "🔍 Auto" : `${me.native}${auto ? " 🔍" : ""}`} ▾</Text>
       </Pressable>
 
       <View style={styles.content}>{main}</View>
@@ -114,11 +131,11 @@ function Half(
 
       <View style={styles.micRow}>
         <MicButton
-          label={me.native}
+          label={meKnown ? me.native : "🔍"}
           color={color}
           recording={recordingSide === side}
           busy={busySide === side}
-          disabled={theySpeak}
+          disabled={theySpeak || !otherKnown}
           onPress={() => props.onMic(side)}
         />
       </View>

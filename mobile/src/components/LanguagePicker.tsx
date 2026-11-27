@@ -10,9 +10,12 @@ type Props = {
   onClose: () => void;
   /** Rotate 180° so the person sitting opposite can read it (face-to-face mode). */
   flipped?: boolean;
+  /** Show an "Auto-detect" choice at the top; `auto` marks it as the current selection. */
+  auto?: boolean;
+  onSelectAuto?: () => void;
 };
 
-export function LanguagePicker({ visible, selected, onSelect, onClose, flipped }: Props) {
+export function LanguagePicker({ visible, selected, onSelect, onClose, flipped, auto, onSelectAuto }: Props) {
   const [query, setQuery] = useState("");
   const items = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -45,9 +48,25 @@ export function LanguagePicker({ visible, selected, onSelect, onClose, flipped }
           data={items}
           keyExtractor={(l) => l.code}
           keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={
+            onSelectAuto && !query ? (
+              <Pressable
+                style={[styles.row, auto && styles.rowSelected]}
+                onPress={() => {
+                  onSelectAuto();
+                  onClose();
+                }}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.name}>🔍 Auto-detect</Text>
+                  <Text style={styles.native}>Identified from speech, any of the {LANGUAGES.length} languages</Text>
+                </View>
+              </Pressable>
+            ) : undefined
+          }
           renderItem={({ item }) => (
             <Pressable
-              style={[styles.row, item.code === selected && styles.rowSelected]}
+              style={[styles.row, !auto && item.code === selected && styles.rowSelected]}
               onPress={() => {
                 onSelect(item);
                 setQuery("");
