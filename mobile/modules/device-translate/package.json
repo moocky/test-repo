@@ -1,0 +1,8 @@
+{
+  "name": "device-translate",
+  "version": "1.0.0",
+  "description": "Free on-device translation with Google ML Kit (Android and iOS).",
+  "main": "index.ts",
+  "license": "MIT",
+  "private": true
+}

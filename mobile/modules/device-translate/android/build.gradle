@@ -1,0 +1,20 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.devicetranslate'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.devicetranslate"
+  defaultConfig {
+    versionCode 1
+    versionName "1.0.0"
+  }
+}
+
+dependencies {
+  // On-device translation; language models (~30 MB each) are downloaded on demand.
+  implementation 'com.google.mlkit:translate:17.0.3'
+}

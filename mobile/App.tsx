@@ -14,20 +14,32 @@ import {
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { requestRecordingPermissionsAsync, setAudioModeAsync } from "expo-audio";
-import { LANGUAGES, byCode, resolveLanguage, type Language } from "./src/languages";
+import { LANGUAGES, byCode, deviceSupported, resolveLanguage, type Language } from "./src/languages";
 import { LanguagePicker } from "./src/components/LanguagePicker";
 import { MicButton } from "./src/components/MicButton";
 import { FaceToFace } from "./src/components/FaceToFace";
-import { RateLimitError, speechTranslate, textTranslate } from "./src/api";
-import { enqueueSpeech, hasDeviceVoice, onSpeakingChange, speak, stopSpeaking } from "./src/speech";
+import { RateLimitError, speechTranslate } from "./src/api";
+import { CLOUD_CONFIGURED } from "./src/config";
+import {
+  NeedsCloudError,
+  deviceEngineAvailable,
+  deviceProblem,
+  effectiveEngine,
+  ensureLanguagePacks,
+  languagePacksMissing,
+  translateText,
+  type Engine,
+} from "./src/engine";
+import { enqueueSpeech, hasDeviceVoice, onSpeakingChange, setServerVoiceAllowed, speak, stopSpeaking } from "./src/speech";
 import { loadHistory, loadSettings, saveHistory, saveSettings, type Entry, type Settings } from "./src/storage";
 import { colors } from "./src/theme";
 import { useLiveTranscription, type Segment } from "./src/useLiveTranscription";
 import { useHeadphones } from "./src/useHeadphones";
+import { deviceRecognitionAvailable, useDeviceRecognition } from "./src/useDeviceRecognition";
 
 type Side = "A" | "B";
 type SegTranslation = { translation: string; detectedLanguage: string | null; detectedLanguageCode: string | null };
-type Turn = { side: Side; source: Language | null; target: Language; speakLive: boolean };
+type Turn = { side: Side; source: Language | null; target: Language; speakLive: boolean; engine: Engine };
 const other = (side: Side): Side => (side === "A" ? "B" : "A");
 
 export default function App() {
@@ -58,7 +70,7 @@ function Translator() {
     if (!t || segPromises.current.has(seg.id)) return;
     setLiveTranslations((l) => [...l, { id: seg.id, text: null }]);
     const context = previous.map((p) => p.text.trim()).slice(-3);
-    const promise = textTranslate(seg.text.trim(), t.source, t.target, context).then((r) => {
+    const promise = translateText(t.engine, seg.text.trim(), t.source, t.target, context).then((r) => {
       // Lock in the speaker's language as soon as the first sentence is understood.
       markDetected(t.side, r.detectedLanguage, r.detectedLanguageCode);
       return {
@@ -81,11 +93,38 @@ function Translator() {
 
   const recordingSideRef = useRef<Side | null>(null);
   const stopRef = useRef<(side: Side) => void>(() => {});
-  const live = useLiveTranscription({
+  const liveOpts = {
     onFinal: translateSegment,
     // Server reached the max session length: wrap up exactly as if the user tapped stop.
     onMaxDuration: () => recordingSideRef.current && stopRef.current(recordingSideRef.current),
-  });
+  };
+  const cloudLive = useLiveTranscription(liveOpts);
+  const deviceLive = useDeviceRecognition(liveOpts);
+  const engine: Engine = effectiveEngine(settings?.engine ?? "cloud");
+  /** The recogniser that the current turn uses (fixed per turn even if the engine is switched meanwhile). */
+  const turnEngine = useRef<Engine>(engine);
+  const live = (recordingSideRef.current ? turnEngine.current : engine) === "device" ? deviceLive : cloudLive;
+  setServerVoiceAllowed(engine === "cloud");
+
+  // On-device: fetch the offline language packs for the chosen pair before they're needed.
+  const [packs, setPacks] = useState<"idle" | "checking" | "downloading" | "ready" | "error">("idle");
+  useEffect(() => {
+    if (engine !== "device" || !deviceEngineAvailable || !settings) return setPacks("idle");
+    const langs = [byCode(settings.langA), byCode(settings.langB)].filter((l): l is Language => !!l && deviceSupported(l));
+    let cancelled = false;
+    setPacks("checking");
+    languagePacksMissing(langs)
+      .then((missing) => {
+        if (cancelled) return;
+        if (missing) setPacks("downloading");
+        return ensureLanguagePacks(langs);
+      })
+      .then(() => !cancelled && setPacks("ready"))
+      .catch(() => !cancelled && setPacks("error"));
+    return () => {
+      cancelled = true;
+    };
+  }, [engine, settings?.langA, settings?.langB]);
 
   // Echo guard: through the loudspeaker the mic would hear the translation and transcribe it,
   // so the mic is muted while the app speaks. With headphones there is no echo → keep it open.
@@ -160,7 +199,8 @@ function Translator() {
   const langA = byCode(settings.langA) ?? LANGUAGES[0];
   const langB = byCode(settings.langB) ?? LANGUAGES[1];
   const langsFor = (side: Side): [Language, Language] => (side === "A" ? [langA, langB] : [langB, langA]);
-  const isAuto = (side: Side) => (side === "A" ? settings.autoA : settings.autoB);
+  /** Auto-detect needs the cloud engine; on-device, a side keeps its last (or chosen) language. */
+  const isAuto = (side: Side) => engine === "cloud" && (side === "A" ? settings.autoA : settings.autoB);
   /** False while a side is in auto mode and hasn't spoken yet – nothing can be translated *into* it. */
   const isKnown = (side: Side) => !isAuto(side) || (side === "A" ? settings.detectedA : settings.detectedB);
   const waitForOther = () =>
@@ -171,24 +211,40 @@ function Translator() {
 
   async function startRecording(side: Side) {
     if (!isKnown(other(side))) return waitForOther();
-    const perm = await requestRecordingPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert("Microphone needed", "Allow microphone access in Settings to translate speech.");
-      return;
+    const [source, target] = langsFor(side);
+    if (engine === "device") {
+      const problem = !deviceEngineAvailable || !deviceRecognitionAvailable
+        ? "On-device mode needs a development build of the app (it isn't available in Expo Go or on the web)."
+        : deviceProblem(source, target);
+      if (problem) return Alert.alert("Not available on-device", problem);
+    } else {
+      const perm = await requestRecordingPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert("Microphone needed", "Allow microphone access in Settings to translate speech.");
+        return;
+      }
     }
     await stopSpeaking();
-    await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-    const [source, target] = langsFor(side);
+    // The on-device recogniser configures the audio session itself.
+    if (engine === "cloud") await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
     segPromises.current = new Map();
     speakChain.current = Promise.resolve();
     setLiveTranslations([]);
     const auto = isAuto(side);
-    turn.current = { side, source: auto ? null : source, target, speakLive: liveSpeakActive };
+    // On-device, the recogniser can't be muted while the phone speaks, so live speaking is only
+    // safe with headphones; through the loudspeaker the whole translation is spoken after "stop".
+    const speakLive = liveSpeakActive && (engine === "cloud" || onHeadphones);
+    turn.current = { side, source: auto ? null : source, target, speakLive, engine };
+    turnEngine.current = engine;
     try {
-      // Auto mode: no language hint, so speech-to-text identifies the language itself.
-      await live.start(auto ? null : source.stt);
+      if (engine === "device") {
+        await deviceLive.start(source.code, { echoCancellation: !onHeadphones });
+      } else {
+        // Auto mode: no language hint, so speech-to-text identifies the language itself.
+        await cloudLive.start(auto ? null : source.stt);
+      }
     } catch (e) {
-      live.cancel();
+      (engine === "device" ? deviceLive : cloudLive).cancel();
       Alert.alert("Microphone error", e instanceof Error ? e.message : String(e));
       return;
     }
@@ -231,6 +287,8 @@ function Translator() {
           detectedLanguageCode: parts.find((p) => p.detectedLanguageCode)?.detectedLanguageCode ?? null,
         };
         spokenLive = !!turn.current?.speakLive;
+      } else if (turnEngine.current === "device" && heard.errorMessage) {
+        throw new Error(`Speech recognition: ${heard.errorMessage}`);
       } else if (heard.rateLimited) {
         throw new RateLimitError(heard.errorMessage ?? "Too many requests. Please wait a moment.");
       } else if (heard.liveFailed && heard.fileUri) {
@@ -260,7 +318,7 @@ function Translator() {
       if (settings!.autoSpeak && !spokenLive) await speak(r.translation, target, r.audioBase64);
     } catch (e) {
       Alert.alert(
-        e instanceof RateLimitError ? "Slow down" : "Translation failed",
+        e instanceof RateLimitError ? "Slow down" : e instanceof NeedsCloudError ? "Not available on-device" : "Translation failed",
         e instanceof Error ? e.message : String(e),
       );
     } finally {
@@ -281,7 +339,7 @@ function Translator() {
     setBusySide("A");
     try {
       const autoA = isAuto("A");
-      const r = await textTranslate(text, autoA ? null : langA, langB);
+      const r = await translateText(engine, text, autoA ? null : langA, langB);
       const typedIn = markDetected("A", r.detectedLanguage, r.detectedLanguageCode);
       addEntry({
         id: `${Date.now()}`,
@@ -296,7 +354,7 @@ function Translator() {
       if (settings!.autoSpeak) await speak(r.translation, langB);
     } catch (e) {
       Alert.alert(
-        e instanceof RateLimitError ? "Slow down" : "Translation failed",
+        e instanceof RateLimitError ? "Slow down" : e instanceof NeedsCloudError ? "Not available on-device" : "Translation failed",
         e instanceof Error ? e.message : String(e),
       );
     } finally {
@@ -317,7 +375,9 @@ function Translator() {
       onClose={() => setPicker(null)}
       onSelect={(l) => updateSettings(picker === "A" ? { langA: l.code, autoA: false } : { langB: l.code, autoB: false })}
       auto={picker !== null && isAuto(picker)}
-      onSelectAuto={() => {
+      unavailable={engine === "device" ? (l) => !deviceSupported(l) : undefined}
+      unavailableLabel="cloud only"
+      onSelectAuto={engine === "device" ? undefined : () => {
         if (picker === null) return;
         // Both sides unknown = nothing to translate into. One side needs a known language.
         if (!isKnown(other(picker))) {
@@ -342,8 +402,8 @@ function Translator() {
           liveTranslations={liveTranslations}
           connected={live.connected}
           headphones={onHeadphones}
-          autoA={settings.autoA}
-          autoB={settings.autoB}
+          autoA={isAuto("A")}
+          autoB={isAuto("B")}
           knownA={isKnown("A")}
           knownB={isKnown("B")}
           recordingSide={recordingSide}
@@ -390,6 +450,12 @@ function Translator() {
         <Pressable onPress={() => updateSettings({ faceToFace: true })} style={styles.f2fBtn}>
           <Text style={styles.f2fText}>👥  Face-to-face mode</Text>
         </Pressable>
+
+        <EngineBar
+          engine={engine}
+          packs={packs}
+          onChange={(e) => updateSettings({ engine: e })}
+        />
 
         <View style={styles.toggles}>
           <Toggle label="Speak translation" value={settings.autoSpeak} onChange={(v) => updateSettings({ autoSpeak: v })} />
@@ -497,6 +563,46 @@ function Translator() {
 
       {languagePicker}
     </SafeAreaView>
+  );
+}
+
+/** Engine choice (only when a server is configured) and on-device status. */
+function EngineBar(props: { engine: Engine; packs: string; onChange: (e: Engine) => void }) {
+  const { engine, packs, onChange } = props;
+  const deviceReady = deviceEngineAvailable && deviceRecognitionAvailable;
+  const status =
+    engine === "cloud"
+      ? "☁️ Best quality · 116 languages · auto-detect"
+      : !deviceReady
+        ? "⚠️ On-device mode needs a development build (not in Expo Go / web)"
+        : packs === "downloading"
+          ? "⬇️ Downloading offline language packs (~30 MB each)…"
+          : packs === "error"
+            ? "⚠️ Couldn't download language packs – check the connection"
+            : packs === "ready"
+              ? "📱 Free · offline-ready · ~60 languages"
+              : "📱 Free · ~60 languages";
+  return (
+    <View style={styles.engineWrap}>
+      {CLOUD_CONFIGURED && (
+        <View style={styles.segment}>
+          {(["device", "cloud"] as const).map((e) => (
+            <Pressable
+              key={e}
+              onPress={() => onChange(e)}
+              style={[styles.segmentBtn, engine === e && styles.segmentOn]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: engine === e }}
+            >
+              <Text style={[styles.segmentText, engine === e && styles.segmentTextOn]}>
+                {e === "device" ? "📱 On-device · free" : "☁️ Cloud"}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+      <Text style={styles.engineStatus}>{status}</Text>
+    </View>
   );
 }
 
@@ -627,6 +733,13 @@ const styles = StyleSheet.create({
   swapText: { color: colors.text, fontSize: 22 },
   f2fBtn: { marginHorizontal: 12, marginBottom: 8, paddingVertical: 10, borderRadius: 12, backgroundColor: colors.cardAlt, alignItems: "center" },
   f2fText: { color: colors.text, fontSize: 15, fontWeight: "600" },
+  engineWrap: { marginHorizontal: 12, marginBottom: 6, gap: 4 },
+  segment: { flexDirection: "row", backgroundColor: colors.card, borderRadius: 10, padding: 3 },
+  segmentBtn: { flex: 1, paddingVertical: 7, borderRadius: 8, alignItems: "center" },
+  segmentOn: { backgroundColor: colors.cardAlt },
+  segmentText: { color: colors.muted, fontSize: 13, fontWeight: "600" },
+  segmentTextOn: { color: colors.text },
+  engineStatus: { color: colors.muted, fontSize: 12, paddingHorizontal: 4 },
   hpRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, paddingVertical: 4 },
   hpText: { color: colors.accentB, fontSize: 13, flex: 1 },
   hpAction: { color: colors.accent, fontSize: 13, fontWeight: "600" },

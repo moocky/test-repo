@@ -21,6 +21,15 @@
       "env": {
         "EXPO_PUBLIC_API_URL": "https://polyglot-voice-api.onrender.com"
       }
+    },
+    "free": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": ""
+      }
     }
   },
   "submit": {

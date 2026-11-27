@@ -1,0 +1,5 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": { "modules": ["DeviceTranslateModule"] },
+  "android": { "modules": ["expo.modules.devicetranslate.DeviceTranslateModule"] }
+}

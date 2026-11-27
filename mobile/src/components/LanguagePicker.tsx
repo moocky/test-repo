@@ -13,9 +13,13 @@ type Props = {
   /** Show an "Auto-detect" choice at the top; `auto` marks it as the current selection. */
   auto?: boolean;
   onSelectAuto?: () => void;
+  /** Languages the current engine can't handle: shown greyed out with this badge, not selectable. */
+  unavailable?: (l: Language) => boolean;
+  unavailableLabel?: string;
 };
 
-export function LanguagePicker({ visible, selected, onSelect, onClose, flipped, auto, onSelectAuto }: Props) {
+export function LanguagePicker(props: Props) {
+  const { visible, selected, onSelect, onClose, flipped, auto, onSelectAuto, unavailable, unavailableLabel } = props;
   const [query, setQuery] = useState("");
   const items = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -64,9 +68,12 @@ export function LanguagePicker({ visible, selected, onSelect, onClose, flipped, 
               </Pressable>
             ) : undefined
           }
-          renderItem={({ item }) => (
+          renderItem={({ item }) => {
+            const off = unavailable?.(item) ?? false;
+            return (
             <Pressable
-              style={[styles.row, !auto && item.code === selected && styles.rowSelected]}
+              disabled={off}
+              style={[styles.row, !auto && item.code === selected && styles.rowSelected, off && styles.rowOff]}
               onPress={() => {
                 onSelect(item);
                 setQuery("");
@@ -77,9 +84,14 @@ export function LanguagePicker({ visible, selected, onSelect, onClose, flipped, 
                 <Text style={styles.name}>{item.name}</Text>
                 <Text style={styles.native}>{item.native}</Text>
               </View>
-              {!item.stt && <Text style={styles.badge}>speech beta</Text>}
+              {off ? (
+                <Text style={styles.badgeOff}>{unavailableLabel ?? "unavailable"}</Text>
+              ) : (
+                !item.stt && !unavailable && <Text style={styles.badge}>speech beta</Text>
+              )}
             </Pressable>
-          )}
+            );
+          }}
         />
       </View>
     </Modal>
@@ -101,6 +113,8 @@ const styles = StyleSheet.create({
   },
   row: { flexDirection: "row", alignItems: "center", paddingVertical: 12, paddingHorizontal: 16 },
   rowSelected: { backgroundColor: colors.card },
+  rowOff: { opacity: 0.4 },
+  badgeOff: { color: colors.muted, fontSize: 11, borderColor: colors.muted, borderWidth: 1, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
   name: { color: colors.text, fontSize: 16 },
   native: { color: colors.muted, fontSize: 14, marginTop: 2 },
   badge: { color: colors.warn, fontSize: 11, borderColor: colors.warn, borderWidth: 1, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },

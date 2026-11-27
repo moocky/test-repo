@@ -23,6 +23,8 @@ export type Settings = {
   manualHeadphones: boolean;
   /** Turn on live speaking automatically while headphones are connected (no echo risk). */
   liveSpeakWithHeadphones: boolean;
+  /** Preferred engine when a server is configured (without one, always "device"). */
+  engine: "cloud" | "device";
   /** Per side: identify the language from speech instead of a fixed choice. */
   autoA: boolean;
   autoB: boolean;
@@ -44,7 +46,7 @@ async function load<T>(key: string, fallback: T): Promise<T> {
 }
 
 export const loadSettings = () =>
-  load<Settings>(SETTINGS, { langA: "he-IL", langB: "en-US", autoSpeak: true, liveSpeak: false, faceToFace: false, manualHeadphones: false, liveSpeakWithHeadphones: true, autoA: false, autoB: false, detectedA: false, detectedB: false });
+  load<Settings>(SETTINGS, { langA: "he-IL", langB: "en-US", autoSpeak: true, liveSpeak: false, faceToFace: false, manualHeadphones: false, liveSpeakWithHeadphones: true, engine: "cloud", autoA: false, autoB: false, detectedA: false, detectedB: false });
 export const saveSettings = (s: Settings) => AsyncStorage.setItem(SETTINGS, JSON.stringify(s));
 
 export async function loadHistory(): Promise<Entry[]> {
