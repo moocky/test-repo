@@ -18,7 +18,7 @@ import { LANGUAGES, byCode, type Language } from "./src/languages";
 import { LanguagePicker } from "./src/components/LanguagePicker";
 import { MicButton } from "./src/components/MicButton";
 import { FaceToFace } from "./src/components/FaceToFace";
-import { speechTranslate, textTranslate } from "./src/api";
+import { RateLimitError, speechTranslate, textTranslate } from "./src/api";
 import { enqueueSpeech, hasDeviceVoice, onSpeakingChange, speak, stopSpeaking } from "./src/speech";
 import { loadHistory, loadSettings, saveHistory, saveSettings, type Entry, type Settings } from "./src/storage";
 import { colors } from "./src/theme";
@@ -74,7 +74,13 @@ function Translator() {
     }
   };
 
-  const live = useLiveTranscription({ onFinal: translateSegment });
+  const recordingSideRef = useRef<Side | null>(null);
+  const stopRef = useRef<(side: Side) => void>(() => {});
+  const live = useLiveTranscription({
+    onFinal: translateSegment,
+    // Server reached the max session length: wrap up exactly as if the user tapped stop.
+    onMaxDuration: () => recordingSideRef.current && stopRef.current(recordingSideRef.current),
+  });
 
   // Echo guard: through the loudspeaker the mic would hear the translation and transcribe it,
   // so the mic is muted while the app speaks. With headphones there is no echo → keep it open.
@@ -144,10 +150,13 @@ function Translator() {
       return;
     }
     startedAt.current = Date.now();
+    recordingSideRef.current = side;
     setRecordingSide(side);
   }
 
   async function stopAndTranslate(side: Side) {
+    if (recordingSideRef.current !== side) return; // already stopping (e.g. tap + server max length)
+    recordingSideRef.current = null;
     setRecordingSide(null);
     const tooShort = Date.now() - startedAt.current < 500;
     setBusySide(side);
@@ -172,6 +181,8 @@ function Translator() {
           detectedLanguage: parts.find((p) => p.detectedLanguage)?.detectedLanguage ?? null,
         };
         spokenLive = !!turn.current?.speakLive;
+      } else if (heard.rateLimited) {
+        throw new RateLimitError(heard.errorMessage ?? "Too many requests. Please wait a moment.");
       } else if (heard.liveFailed && heard.fileUri) {
         // Live stream dropped: send the recorded file through the batch pipeline.
         const needServerVoice = settings!.autoSpeak && !(await hasDeviceVoice(target));
@@ -197,7 +208,10 @@ function Translator() {
       setBusySide(null); // the entry is on screen; don't keep the spinner during playback
       if (settings!.autoSpeak && !spokenLive) await speak(r.translation, target, r.audioBase64);
     } catch (e) {
-      Alert.alert("Translation failed", e instanceof Error ? e.message : String(e));
+      Alert.alert(
+        e instanceof RateLimitError ? "Slow down" : "Translation failed",
+        e instanceof Error ? e.message : String(e),
+      );
     } finally {
       turn.current = null;
       setLiveTranslations([]);
@@ -205,6 +219,7 @@ function Translator() {
     }
   }
 
+  stopRef.current = stopAndTranslate;
   const onMic = (side: Side) => (recordingSide === side ? stopAndTranslate(side) : startRecording(side));
 
   async function onSendTyped() {
@@ -226,7 +241,10 @@ function Translator() {
       });
       if (settings!.autoSpeak) await speak(r.translation, langB);
     } catch (e) {
-      Alert.alert("Translation failed", e instanceof Error ? e.message : String(e));
+      Alert.alert(
+        e instanceof RateLimitError ? "Slow down" : "Translation failed",
+        e instanceof Error ? e.message : String(e),
+      );
     } finally {
       setBusySide(null);
     }

@@ -6,10 +6,12 @@ import { transcribe } from "./stt.js";
 import { translate, TranslationRefusedError } from "./translate.js";
 import { synthesize } from "./tts.js";
 import { attachLiveTranscription } from "./live.js";
+import { LIMITS, rateLimit } from "./rateLimit.js";
 
 const app = express();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
-app.use(express.json({ limit: "1mb" }));
+app.set("trust proxy", Number(process.env.TRUST_PROXY ?? 1));
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } }); // ~10 min of speech
+app.use(express.json({ limit: "64kb" }));
 
 // Optional shared-secret check so a deployed server isn't an open proxy to your API keys.
 app.use((req, res, next) => {
@@ -35,7 +37,7 @@ const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null
  *   targetName:      English name of target language
  *   serverTts:       "1" to also return synthesized MP3 (base64)
  */
-app.post("/api/speech-translate", upload.single("audio"), async (req, res, next) => {
+app.post("/api/speech-translate", rateLimit, upload.single("audio"), async (req, res, next) => {
   try {
     if (!req.file) {
       res.status(400).json({ error: "Missing audio" });
@@ -68,12 +70,16 @@ app.post("/api/speech-translate", upload.single("audio"), async (req, res, next)
 });
 
 /** POST /api/translate  { text, sourceName?, targetName, context?: string[] } – text / live-segment translation */
-app.post("/api/translate", async (req, res, next) => {
+app.post("/api/translate", rateLimit, async (req, res, next) => {
   try {
     const text = str(req.body?.text);
     const targetName = str(req.body?.targetName);
     if (!text || !targetName) {
       res.status(400).json({ error: "Missing text or targetName" });
+      return;
+    }
+    if (text.length > LIMITS.maxTextChars) {
+      res.status(413).json({ error: `Text is too long (max ${LIMITS.maxTextChars} characters).` });
       return;
     }
     const context = Array.isArray(req.body.context)
@@ -86,12 +92,16 @@ app.post("/api/translate", async (req, res, next) => {
 });
 
 /** POST /api/tts  { text, languageName } -> { audioBase64 } (MP3) */
-app.post("/api/tts", async (req, res, next) => {
+app.post("/api/tts", rateLimit, async (req, res, next) => {
   try {
     const text = str(req.body?.text);
     const languageName = str(req.body?.languageName);
     if (!text || !languageName) {
       res.status(400).json({ error: "Missing text or languageName" });
+      return;
+    }
+    if (text.length > LIMITS.maxTextChars) {
+      res.status(413).json({ error: `Text is too long (max ${LIMITS.maxTextChars} characters).` });
       return;
     }
     res.json({ audioBase64: (await synthesize(text, languageName)).toString("base64") });
@@ -101,6 +111,10 @@ app.post("/api/tts", async (req, res, next) => {
 });
 
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+    res.status(413).json({ error: "Recording is too long." });
+    return;
+  }
   console.error(err);
   if (err instanceof TranslationRefusedError) {
     res.status(422).json({ error: "This content could not be translated." });

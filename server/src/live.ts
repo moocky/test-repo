@@ -2,6 +2,7 @@ import type { Server } from "node:http";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import OpenAI from "openai";
 import { OpenAIRealtimeWS } from "openai/realtime/ws";
+import { LIMITS, acquireLiveSlot, clientIp, consume, deviceId, limitMessage } from "./rateLimit.js";
 
 /**
  * Live transcription proxy:  app  <—ws—>  this server  <—ws—>  OpenAI Realtime (transcription intent)
@@ -13,6 +14,7 @@ import { OpenAIRealtimeWS } from "openai/realtime/ws";
  *   {"type":"ready"}
  *   {"type":"partial","id","text"}   growing text of the current segment
  *   {"type":"final","id","text"}     finished segment (server VAD splits on pauses)
+ *   {"type":"maxDuration"}           session hit LIVE_MAX_SECONDS; server finalizes as if "stop"
  *   {"type":"done"}                  everything finalized after "stop"
  *   {"type":"error","message"}
  *
@@ -28,6 +30,22 @@ export function attachLiveTranscription(server: Server) {
       client.close(4401, "Unauthorized");
       return;
     }
+    // Rate limits: each live session counts as one request, plus concurrency caps.
+    const ip = clientIp(req);
+    const device = deviceId(url.searchParams.get("device"));
+    const limited = consume(ip, device);
+    if (!limited.ok) {
+      client.send(JSON.stringify({ type: "error", message: limitMessage(limited), retryAfter: limited.retryAfter }));
+      client.close(4429, "Rate limited");
+      return;
+    }
+    const release = acquireLiveSlot(ip, device);
+    if (typeof release === "string") {
+      client.send(JSON.stringify({ type: "error", message: release }));
+      client.close(4429, "Too many live sessions");
+      return;
+    }
+
     const language = url.searchParams.get("lang") || undefined;
     const prompt = url.searchParams.get("prompt") || undefined;
 
@@ -45,6 +63,8 @@ export function attachLiveTranscription(server: Server) {
 
     const finish = () => {
       if (doneTimer) clearTimeout(doneTimer);
+      clearTimeout(maxTimer);
+      release();
       send({ type: "done" });
       upstream?.close({ code: 1000, reason: "done" });
       client.close(1000);
@@ -54,11 +74,25 @@ export function attachLiveTranscription(server: Server) {
       if (stopping && pending.size === 0) setTimeout(() => pending.size === 0 && finish(), 400);
     };
 
+    const beginStop = () => {
+      if (stopping) return;
+      stopping = true;
+      doneTimer = setTimeout(finish, 6000);
+      if (upstreamReady) upstream!.send({ type: "input_audio_buffer.commit" });
+      maybeFinish();
+    };
+    // Cap session length so one forgotten open mic can't run up the bill.
+    const maxTimer = setTimeout(() => {
+      send({ type: "maxDuration", seconds: LIMITS.liveMaxSeconds });
+      beginStop();
+    }, LIMITS.liveMaxSeconds * 1000);
+
     client.on("message", (data: RawData, isBinary) => {
       if (isBinary) {
         const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+        if (stopping) return;
         if (upstreamReady) appendAudio(chunk);
-        else queued.push(chunk);
+        else if (queued.length < 500) queued.push(chunk); // ~20 s of audio while connecting
         return;
       }
       let msg: { type?: string };
@@ -67,16 +101,13 @@ export function attachLiveTranscription(server: Server) {
       } catch {
         return;
       }
-      if (msg.type === "stop" && !stopping) {
-        stopping = true;
-        doneTimer = setTimeout(finish, 6000);
-        if (upstreamReady) upstream!.send({ type: "input_audio_buffer.commit" });
-        maybeFinish();
-      }
+      if (msg.type === "stop") beginStop();
     });
 
     client.on("close", () => {
       if (doneTimer) clearTimeout(doneTimer);
+      clearTimeout(maxTimer);
+      release();
       upstream?.close({ code: 1000, reason: "client closed" });
     });
 

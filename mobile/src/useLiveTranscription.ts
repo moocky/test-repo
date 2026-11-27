@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { Platform } from "react-native";
 import { useAudioStream, type AudioStreamBuffer } from "expo-audio";
 import { API_URL, APP_KEY } from "./config";
+import { getDeviceId } from "./deviceId";
 
 const TARGET_RATE = 24000; // OpenAI Realtime expects PCM16 mono @ 24 kHz
 
@@ -40,15 +41,29 @@ export type LiveResult = {
   /** WAV file of the same speech, for the batch fallback (native only). */
   fileUri: string | null;
   liveFailed: boolean;
+  /** The server refused the session (rate limit / too many sessions) – don't retry via the fallback. */
+  rateLimited: boolean;
+  errorMessage: string | null;
 };
 
 /**
  * Streams microphone audio to the backend and exposes the transcript as it is spoken.
  * `liveText` updates several times per second while the user talks.
  */
-export function useLiveTranscription(opts: { onFinal?: (seg: Segment, previous: Segment[]) => void } = {}) {
+export function useLiveTranscription(
+  opts: {
+    onFinal?: (seg: Segment, previous: Segment[]) => void;
+    /** Server ended the session because it hit the maximum length; the caller should stop. */
+    onMaxDuration?: () => void;
+  } = {},
+) {
   const onFinalRef = useRef(opts.onFinal);
   onFinalRef.current = opts.onFinal;
+  const onMaxRef = useRef(opts.onMaxDuration);
+  onMaxRef.current = opts.onMaxDuration;
+  /** Last error message from the server (e.g. rate limit), for the fallback path to report. */
+  const errorMessage = useRef<string | null>(null);
+  const rateLimited = useRef(false);
   /** While true, mic audio is not sent (e.g. while the phone is speaking a translation → no echo). */
   const muted = useRef(false);
   const onBufferRef = useRef<(b: AudioStreamBuffer) => void>(() => {});
@@ -91,6 +106,9 @@ export function useLiveTranscription(opts: { onFinal?: (seg: Segment, previous: 
       const params = new URLSearchParams();
       if (sttLanguage) params.set("lang", sttLanguage);
       if (APP_KEY) params.set("key", APP_KEY);
+      params.set("device", await getDeviceId());
+      errorMessage.current = null;
+      rateLimited.current = false;
       const socket = new WebSocket(`${API_URL.replace(/^http/, "ws")}/ws/transcribe?${params}`);
       socket.binaryType = "arraybuffer";
       ws.current = socket;
@@ -103,7 +121,12 @@ export function useLiveTranscription(opts: { onFinal?: (seg: Segment, previous: 
         if (msg.type === "ready") setConnected(true);
         else if (msg.type === "partial") upsert(msg.id, msg.text, false);
         else if (msg.type === "final") upsert(msg.id, msg.text, true);
-        else if (msg.type === "error") failed.current = true;
+        else if (msg.type === "maxDuration") onMaxRef.current?.();
+        else if (msg.type === "error") {
+          failed.current = true;
+          errorMessage.current = msg.message ?? null;
+          if (msg.retryAfter || /limit|too many|busy|already running/i.test(msg.message ?? "")) rateLimited.current = true;
+        }
         else if (msg.type === "done") doneWaiter.current?.();
       };
       socket.onerror = () => {
@@ -168,7 +191,14 @@ export function useLiveTranscription(opts: { onFinal?: (seg: Segment, previous: 
 
     const segs = segments.current.filter((s) => s.text.trim());
     const transcript = segs.map((s) => s.text.trim()).join(" ");
-    return { transcript, segments: segs, fileUri, liveFailed: failed.current || !socket };
+    return {
+      transcript,
+      segments: segs,
+      fileUri,
+      liveFailed: failed.current || !socket,
+      rateLimited: rateLimited.current,
+      errorMessage: errorMessage.current,
+    };
   }, [stream]);
 
   /** Abort without waiting for results. */

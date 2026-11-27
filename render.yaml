@@ -22,3 +22,12 @@ services:
       # Render generates a random value; copy it into the app's EXPO_PUBLIC_APP_KEY.
       - key: APP_KEY
         generateValue: true
+      # Rate limiting – see server/.env.example for all knobs. Change here or in the dashboard.
+      - key: TRUST_PROXY
+        value: "1"
+      - key: RATE_LIMIT_DEVICE_PER_MINUTE
+        value: "40"
+      - key: RATE_LIMIT_DEVICE_PER_DAY
+        value: "600"
+      - key: LIVE_MAX_SECONDS
+        value: "180"
