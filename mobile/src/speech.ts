@@ -6,6 +6,13 @@ import type { Language } from "./languages";
 import { serverTts } from "./api";
 
 let voiceCache: Speech.Voice[] | null = null;
+/** Server voices only exist with the cloud engine; on-device mode must use the OS voices. */
+let serverVoiceAllowed = true;
+export function setServerVoiceAllowed(allowed: boolean) {
+  serverVoiceAllowed = allowed;
+}
+const noVoice = (lang: Language) =>
+  new Error(`This device has no ${lang.name} voice. Install one in the system text-to-speech settings.`);
 let player: AudioPlayer | null = null;
 
 async function voices(): Promise<Speech.Voice[]> {
@@ -101,6 +108,7 @@ async function speakToEnd(text: string, lang: Language): Promise<void> {
     });
     return;
   }
+  if (!serverVoiceAllowed) throw noVoice(lang);
   await playBase64Mp3(await serverTts(text, lang), false);
 }
 
@@ -138,5 +146,6 @@ export async function speak(text: string, lang: Language, prefetchedMp3?: string
     Speech.speak(text, { language: voice.language, voice: voice.identifier });
     return;
   }
+  if (!serverVoiceAllowed) throw noVoice(lang);
   return playBase64Mp3(await serverTts(text, lang));
 }

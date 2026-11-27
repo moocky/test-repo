@@ -167,3 +167,25 @@ export function resolveLanguage(name?: string | null, iso?: string | null): Lang
   for (const [alias, canon] of Object.entries(ISO_ALIASES)) if (want.has(canon)) want.add(alias);
   return LANGUAGES.find((l) => want.has(l.code.split("-")[0].toLowerCase()) || (l.stt !== null && want.has(l.stt))) ?? null;
 }
+
+/**
+ * Languages Google ML Kit can translate on the device (free, offline after a one-time ~30 MB
+ * download per language). Codes are ML Kit's language tags.
+ */
+const ML_KIT = new Set(
+  ("af ar be bg bn ca cs cy da de el en eo es et fa fi fr ga gl gu he hi hr ht hu id is it ja ka kn ko " +
+    "lt lv mk mr ms mt nl no pl pt ro ru sk sl sq sv sw ta te th tl tr uk ur vi zh").split(" "),
+);
+const ML_KIT_ALIASES: Record<string, string> = { fil: "tl", nb: "no", pnb: "pa" };
+
+/**
+ * ML Kit tag for on-device translation, or null when only the cloud engine can translate it.
+ * Regional varieties map to their standard language (Egyptian Arabic → Arabic, Cantonese → Chinese).
+ */
+export function deviceTranslateCode(l: Language): string | null {
+  const base = l.code.split("-")[0].toLowerCase();
+  const tag = ML_KIT_ALIASES[base] ?? (l.stt && ML_KIT.has(l.stt) ? l.stt : base);
+  return ML_KIT.has(tag) ? tag : null;
+}
+
+export const deviceSupported = (l: Language) => deviceTranslateCode(l) !== null;

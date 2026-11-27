@@ -35,6 +35,13 @@
         {
           "microphonePermission": "The microphone is used to hear the speech you want translated."
         }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "The microphone is used to hear the speech you want translated.",
+          "speechRecognitionPermission": "Speech recognition turns what you say into text so it can be translated."
+        }
       ]
     ],
     "backgroundColor": "#0f1115"
