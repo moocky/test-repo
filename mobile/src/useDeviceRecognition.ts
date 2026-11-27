@@ -104,10 +104,21 @@ export function createSentenceSplitter(emit: (sentence: string) => void) {
 }
 
 export function useDeviceRecognition(
-  opts: { onFinal?: (seg: Segment, previous: Segment[]) => void; onMaxDuration?: () => void } = {},
+  opts: {
+    onFinal?: (seg: Segment, previous: Segment[]) => void;
+    onMaxDuration?: () => void;
+    /** The recogniser stopped by itself (error, or it gave up) while we were still recording. */
+    onEnded?: () => void;
+  } = {},
 ) {
   const onFinalRef = useRef(opts.onFinal);
   onFinalRef.current = opts.onFinal;
+  const onEndedRef = useRef(opts.onEnded);
+  onEndedRef.current = opts.onEnded;
+  /** True between "start" and "end" of the native recogniser. */
+  const running = useRef(false);
+  const stopping = useRef(false);
+  const startTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [liveText, setLiveText] = useState("");
   const [connected, setConnected] = useState(false);
@@ -140,7 +151,11 @@ export function useDeviceRecognition(
     if (!sr) return;
     const m = sr.ExpoSpeechRecognitionModule;
     const subs = [
-      m.addListener("start", () => setConnected(true)),
+      m.addListener("start", () => {
+        running.current = true;
+        if (startTimer.current) clearTimeout(startTimer.current);
+        setConnected(true);
+      }),
       m.addListener("result", (e) => {
         if (!active.current) return;
         const text = e.results[0]?.transcript ?? "";
@@ -149,12 +164,21 @@ export function useDeviceRecognition(
       m.addListener("error", (e) => {
         // "no-speech" just means silence; anything else is worth reporting.
         if (e.error === "language-not-supported")
-          errorMessage.current = "This language can't be recognised offline on this phone. Install its offline speech model in the phone's settings.";
-        else if (e.error !== "no-speech" && e.error !== "aborted") errorMessage.current = e.message || e.error;
+          errorMessage.current =
+            "This language can't be recognised offline on this phone. Install its offline speech model in the " +
+            "phone's settings, or turn off \"Offline speech only\".";
+        else if (e.error === "network")
+          errorMessage.current = "The phone's recogniser needs the internet for this language. Turn on \"Offline speech only\" only for languages with an offline model.";
+        else if (e.error !== "no-speech" && e.error !== "aborted")
+          errorMessage.current = `${e.message || "Speech recognition failed"} (${e.error})`;
       }),
       m.addListener("end", () => {
+        running.current = false;
         setConnected(false);
         endWaiter.current?.();
+        // Ended on its own while the user is still "recording" → finish the turn so the UI
+        // doesn't hang, and so any error is shown right away.
+        if (active.current && !stopping.current) onEndedRef.current?.();
       }),
     ];
     return () => subs.forEach((s) => s.remove());
@@ -173,6 +197,15 @@ export function useDeviceRecognition(
     setLiveText("");
     setConnected(false);
     active.current = true;
+    stopping.current = false;
+    running.current = false;
+    if (startTimer.current) clearTimeout(startTimer.current);
+    startTimer.current = setTimeout(() => {
+      if (active.current && !running.current && !stopping.current) {
+        errorMessage.current ??= "Speech recognition didn't start on this phone.";
+        onEndedRef.current?.();
+      }
+    }, 6000);
     sr.ExpoSpeechRecognitionModule.start({
       lang: locale,
       interimResults: true,
@@ -188,7 +221,9 @@ export function useDeviceRecognition(
   );
 
   const stop = useCallback(async (): Promise<LiveResult> => {
-    if (sr && active.current) {
+    stopping.current = true;
+    if (startTimer.current) clearTimeout(startTimer.current);
+    if (sr && active.current && running.current) {
       await new Promise<void>((resolve) => {
         const t = setTimeout(resolve, 4000);
         endWaiter.current = () => {
@@ -215,6 +250,7 @@ export function useDeviceRecognition(
 
   const cancel = useCallback(() => {
     active.current = false;
+    if (startTimer.current) clearTimeout(startTimer.current);
     sr?.ExpoSpeechRecognitionModule.abort();
     setLiveText("");
   }, []);

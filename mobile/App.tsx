@@ -97,6 +97,8 @@ function Translator() {
     onFinal: translateSegment,
     // Server reached the max session length: wrap up exactly as if the user tapped stop.
     onMaxDuration: () => recordingSideRef.current && stopRef.current(recordingSideRef.current),
+    // On-device recogniser ended by itself (error / timeout): wrap up the turn and show why.
+    onEnded: () => recordingSideRef.current && stopRef.current(recordingSideRef.current),
   };
   const cloudLive = useLiveTranscription(liveOpts);
   const deviceLive = useDeviceRecognition(liveOpts);
@@ -108,11 +110,14 @@ function Translator() {
 
   // On-device: fetch the offline language packs for the chosen pair before they're needed.
   const [packs, setPacks] = useState<"idle" | "checking" | "downloading" | "ready" | "error">("idle");
+  const [packsError, setPacksError] = useState<string | null>(null);
+  const [packsAttempt, setPacksAttempt] = useState(0);
   useEffect(() => {
     if (engine !== "device" || !deviceEngineAvailable || !settings) return setPacks("idle");
     const langs = [byCode(settings.langA), byCode(settings.langB)].filter((l): l is Language => !!l && deviceSupported(l));
     let cancelled = false;
     setPacks("checking");
+    setPacksError(null);
     languagePacksMissing(langs)
       .then((missing) => {
         if (cancelled) return;
@@ -120,11 +125,15 @@ function Translator() {
         return ensureLanguagePacks(langs);
       })
       .then(() => !cancelled && setPacks("ready"))
-      .catch(() => !cancelled && setPacks("error"));
+      .catch((e) => {
+        if (cancelled) return;
+        setPacks("error");
+        setPacksError(e instanceof Error ? e.message : String(e));
+      });
     return () => {
       cancelled = true;
     };
-  }, [engine, settings?.langA, settings?.langB]);
+  }, [engine, settings?.langA, settings?.langB, packsAttempt]);
 
   // Echo guard: through the loudspeaker the mic would hear the translation and transcribe it,
   // so the mic is muted while the app speaks. With headphones there is no echo → keep it open.
@@ -268,7 +277,8 @@ function Translator() {
       const heard = await live.stop();
       // Route playback back to the loudspeaker on iOS.
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
-      if (tooShort) return;
+      // A very short tap is ignored – unless the recogniser failed, then say why.
+      if (tooShort && !heard.errorMessage) return;
 
       let r: {
         transcript: string;
@@ -458,6 +468,8 @@ function Translator() {
         <EngineBar
           engine={engine}
           packs={packs}
+          packsError={packsError}
+          onRetryPacks={() => setPacksAttempt((n) => n + 1)}
           onChange={(e) => updateSettings({ engine: e })}
         />
 
@@ -500,18 +512,19 @@ function Translator() {
           />
         </View>
 
-        {/* Conversation */}
+        {/* Conversation. The empty hint lives outside the inverted list: inside it, Android's
+            inversion transform would render the text mirrored. */}
+        {history.length === 0 && (
+          <Text style={styles.empty}>
+            Tap a microphone and speak.{"\n"}Your words are transcribed, translated and spoken aloud.
+          </Text>
+        )}
         <FlatList
           style={{ flex: 1 }}
           contentContainerStyle={{ padding: 12, gap: 10 }}
           data={history}
           inverted
           keyExtractor={(e) => e.id}
-          ListEmptyComponent={
-            <Text style={styles.empty}>
-              Tap a microphone and speak.{"\n"}Your words are transcribed, translated and spoken aloud.
-            </Text>
-          }
           renderItem={({ item }) => <Bubble entry={item} />}
         />
         {history.length > 0 && (
@@ -578,8 +591,14 @@ function Translator() {
 }
 
 /** Engine choice (only when a server is configured) and on-device status. */
-function EngineBar(props: { engine: Engine; packs: string; onChange: (e: Engine) => void }) {
-  const { engine, packs, onChange } = props;
+function EngineBar(props: {
+  engine: Engine;
+  packs: string;
+  packsError: string | null;
+  onRetryPacks: () => void;
+  onChange: (e: Engine) => void;
+}) {
+  const { engine, packs, packsError, onRetryPacks, onChange } = props;
   const deviceReady = deviceEngineAvailable && deviceRecognitionAvailable;
   const status =
     engine === "cloud"
@@ -589,7 +608,7 @@ function EngineBar(props: { engine: Engine; packs: string; onChange: (e: Engine)
         : packs === "downloading"
           ? "⬇️ Downloading offline language packs (~30 MB each)…"
           : packs === "error"
-            ? "⚠️ Couldn't download language packs – check the connection"
+            ? `⚠️ Couldn't download language packs${packsError ? ` (${packsError})` : ""}`
             : packs === "ready"
               ? "📱 Free · offline-ready · ~60 languages"
               : "📱 Free · ~60 languages";
@@ -613,6 +632,11 @@ function EngineBar(props: { engine: Engine; packs: string; onChange: (e: Engine)
         </View>
       )}
       <Text style={styles.engineStatus}>{status}</Text>
+      {engine === "device" && packs === "error" && (
+        <Pressable onPress={onRetryPacks} hitSlop={8}>
+          <Text style={styles.hpAction}>↻ Try again</Text>
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -758,7 +782,7 @@ const styles = StyleSheet.create({
   toggles: { paddingHorizontal: 16, gap: 4 },
   toggle: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   toggleLabel: { color: colors.muted, fontSize: 14 },
-  empty: { color: colors.muted, textAlign: "center", marginTop: 40, lineHeight: 22, transform: [{ scaleY: -1 }] },
+  empty: { color: colors.muted, textAlign: "center", marginTop: 40, marginHorizontal: 24, lineHeight: 22 },
   bubble: { borderRadius: 16, padding: 12, maxWidth: "88%" },
   bubbleA: { backgroundColor: colors.card, alignSelf: "flex-start", borderLeftWidth: 3, borderLeftColor: colors.accent },
   bubbleB: { backgroundColor: colors.cardAlt, alignSelf: "flex-end", borderRightWidth: 3, borderRightColor: colors.accentB },

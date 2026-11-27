@@ -47,7 +47,9 @@ class DeviceTranslateModule : Module() {
           translator.translate(text)
         }
         .addOnSuccessListener { promise.resolve(it) }
-        .addOnFailureListener { promise.reject("ERR_TRANSLATE", it.message ?: "Translation failed", it) }
+        .addOnFailureListener {
+          promise.reject("ERR_TRANSLATE", "${it.javaClass.simpleName}: ${it.message ?: "translation failed"}", it)
+        }
     }
 
     AsyncFunction("isModelDownloaded") { language: String, promise: Promise ->
@@ -56,23 +58,34 @@ class DeviceTranslateModule : Module() {
         promise.resolve(false)
         return@AsyncFunction
       }
+      if (lang == TranslateLanguage.ENGLISH) {
+        promise.resolve(true)
+        return@AsyncFunction
+      }
       RemoteModelManager.getInstance()
         .isModelDownloaded(TranslateRemoteModel.Builder(lang).build())
         .addOnSuccessListener { promise.resolve(it) }
         .addOnFailureListener { promise.resolve(false) }
     }
 
+    /** Download one language's model by preparing an English ↔ language translator (English is built in). */
     AsyncFunction("downloadModel") { language: String, wifiOnly: Boolean, promise: Promise ->
       val lang = TranslateLanguage.fromLanguageTag(language)
       if (lang == null) {
         promise.reject("ERR_UNSUPPORTED_LANGUAGE", "On-device translation does not support $language", null)
         return@AsyncFunction
       }
+      if (lang == TranslateLanguage.ENGLISH) {
+        promise.resolve(true)
+        return@AsyncFunction
+      }
       val conditions = DownloadConditions.Builder().apply { if (wifiOnly) requireWifi() }.build()
-      RemoteModelManager.getInstance()
-        .download(TranslateRemoteModel.Builder(lang).build(), conditions)
+      translatorFor(TranslateLanguage.ENGLISH, lang)!!
+        .downloadModelIfNeeded(conditions)
         .addOnSuccessListener { promise.resolve(true) }
-        .addOnFailureListener { promise.reject("ERR_DOWNLOAD", it.message ?: "Download failed", it) }
+        .addOnFailureListener {
+          promise.reject("ERR_DOWNLOAD", "${it.javaClass.simpleName}: ${it.message ?: "download failed"}", it)
+        }
     }
 
     OnDestroy {
